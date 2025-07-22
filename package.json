@@ -1,0 +1,23 @@
+{
+  "name": "bank-transaction-userbot",
+  "version": "1.0.0",
+  "description": "Userbot để phát hiện và reply tin nhắn giao dịch ngân hàng",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "node test.js",
+    "test-duplicate": "node test-duplicate.js",
+    "stop": "stop.bat"
+  },
+  "dependencies": {
+    "telegram": "^2.22.2",
+    "fs": "^0.0.1-security",
+    "path": "^0.12.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "author": "",
+  "license": "ISC"
+} 
