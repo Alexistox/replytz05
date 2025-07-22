@@ -8,7 +8,10 @@
     "dev": "nodemon index.js",
     "test": "node test.js",
     "test-duplicate": "node test-duplicate.js",
-    "stop": "stop.bat"
+    "stop": "stop.bat",
+    "push": "push.bat",
+    "first-login": "first-login.bat",
+    "run-24-7": "run-24-7.bat"
   },
   "dependencies": {
     "telegram": "^2.22.2",

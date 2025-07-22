@@ -39,6 +39,15 @@ class BankTransactionUserbot {
       });
 
       Utils.log('🔗 Đang kết nối tới Telegram...');
+      
+      // Check if session exists
+      const hasValidSession = config.sessionString && config.sessionString.length > 10;
+      if (hasValidSession) {
+        Utils.log('🔑 Sử dụng session có sẵn - không cần OTP/2FA');
+      } else {
+        Utils.log('🆕 Lần đăng nhập đầu tiên - cần nhập mã xác nhận');
+      }
+      
       await this.client.start({
         phoneNumber: async () => {
           // Sử dụng số từ config, hoặc hỏi nếu không có
@@ -49,8 +58,18 @@ class BankTransactionUserbot {
             return await this.askInput('Nhập số điện thoại (với mã quốc gia): ');
           }
         },
-        password: async () => await this.askInput('Nhập mật khẩu 2FA (nếu có): '),
-        phoneCode: async () => await this.askInput('Nhập mã xác nhận: '),
+        password: async () => {
+          if (hasValidSession) {
+            Utils.log('🔐 Sử dụng 2FA từ session...');
+          }
+          return await this.askInput('Nhập mật khẩu 2FA (nếu có): ');
+        },
+        phoneCode: async () => {
+          if (hasValidSession) {
+            Utils.log('⚠️  Session có thể đã expired, cần mã xác nhận mới');
+          }
+          return await this.askInput('Nhập mã xác nhận: ');
+        },
         onError: (err) => {
           Utils.log(`❌ Lỗi đăng nhập: ${err.message}`);
           throw err;
@@ -58,9 +77,11 @@ class BankTransactionUserbot {
       });
 
       // Save session string để lần sau không cần đăng nhập lại
-      if (this.client.session.save() !== config.sessionString) {
-        Utils.log('💾 Session string đã được cập nhật');
-        // Bạn có thể save vào config file nếu muốn
+      const currentSession = this.client.session.save();
+      if (currentSession !== config.sessionString) {
+        Utils.log('💾 Session string đã được cập nhật - đang lưu...');
+        await this.saveSessionToConfig(currentSession);
+        Utils.log('✅ Session đã được lưu vào config.js');
       }
 
       Utils.log('✅ Kết nối thành công!');
@@ -85,6 +106,43 @@ class BankTransactionUserbot {
         resolve(answer);
       });
     });
+  }
+
+  // Save session string vào config.js
+  async saveSessionToConfig(sessionString) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      
+      // Đọc file config hiện tại
+      const configPath = path.join(__dirname, 'config.js');
+      let configContent = fs.readFileSync(configPath, 'utf8');
+      
+      // Replace sessionString
+      const regex = /sessionString:\s*['"`][^'"`]*['"`]/;
+      const newSessionLine = `sessionString: '${sessionString}'`;
+      
+      if (regex.test(configContent)) {
+        configContent = configContent.replace(regex, newSessionLine);
+      } else {
+        // Nếu không tìm thấy, thêm vào
+        configContent = configContent.replace(
+          /(apiHash:\s*['"`][^'"`]*['"`],?\s*)/,
+          `$1\n  \n  sessionString: '${sessionString}',`
+        );
+      }
+      
+      // Ghi lại file
+      fs.writeFileSync(configPath, configContent, 'utf8');
+      
+      // Update config trong memory
+      config.sessionString = sessionString;
+      
+      return true;
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi lưu session: ${error.message}`);
+      return false;
+    }
   }
 
   // Đăng ký event handlers
