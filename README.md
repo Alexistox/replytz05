@@ -57,20 +57,47 @@ module.exports = {
 - Đây là số điện thoại đã đăng ký Telegram
 
 ### 4. Chạy UserBot
-```bash
-# Cách 1: Dùng script (khuyến nghị)
-run.bat
 
-# Cách 2: Dùng npm
-npm start
+#### 🪟 Windows:
+```bash
+# Login lần đầu (nhập OTP một lần)
+first-login.bat
+
+# Chạy 24/7 (không cần OTP nữa)
+run-24-7.bat
 ```
 
-Lần đầu chạy, bạn sẽ cần:
+#### 🐧 Linux:
+```bash
+# Cho phép thực thi scripts
+chmod +x *.sh
+
+# Login lần đầu (nhập OTP một lần)  
+./first-login.sh
+
+# Chạy 24/7 (không cần OTP nữa)
+./run-24-7.sh
+```
+
+#### ⚡ NPM Scripts (đa nền tảng):
+```bash
+# Windows
+npm run first-login
+npm run run-24-7
+
+# Linux
+npm run linux:first-login
+npm run linux:run-24-7
+```
+
+**Lần đầu chạy, bạn sẽ cần:**
 - ~~Nhập số điện thoại~~ (đã lưu trong config)
 - Nhập mã xác nhận từ Telegram
 - Nhập mật khẩu 2FA (nếu có)
 
 **💡 Lưu ý:** Từ lần thứ 2 trở đi, bot sẽ tự động đăng nhập mà không cần nhập gì!
+
+📋 **Hướng dẫn Linux đầy đủ**: Xem [LINUX-SETUP.md](LINUX-SETUP.md)
 
 ## 📱 Sử dụng
 
@@ -135,8 +162,18 @@ npm test
 npm run test-duplicate
 
 # Dừng bot đang chạy
-npm run stop
-# Hoặc double-click stop.bat
+## Windows:
+npm run stop        # hoặc stop.bat
+
+## Linux:  
+npm run linux:stop  # hoặc ./stop.sh
+
+# Push code lên GitHub
+## Windows:
+npm run push        # hoặc push.bat
+
+## Linux:
+npm run linux:push  # hoặc ./push.sh
 ```
 
 ## 🔧 Cấu trúc project
@@ -147,14 +184,30 @@ bank-transaction-userbot/
 ├── config.js           # Cấu hình API và settings  
 ├── utils.js            # Các hàm tiện ích
 ├── package.json        # Dependencies và scripts
-├── run.bat             # Script khởi chạy (Windows)
-├── stop.bat            # Script dừng bot
+├── 🪟 Windows Scripts:
+│   ├── first-login.bat   # Setup lần đầu (Windows)
+│   ├── run-24-7.bat     # Chạy 24/7 (Windows)
+│   ├── run.bat          # Khởi chạy nhanh (Windows)
+│   ├── stop.bat         # Dừng bot (Windows)
+│   └── push.bat         # Push GitHub (Windows)
+├── 🐧 Linux Scripts:
+│   ├── first-login.sh   # Setup lần đầu (Linux)
+│   ├── run-24-7.sh      # Chạy 24/7 (Linux)
+│   ├── run.sh           # Khởi chạy nhanh (Linux)
+│   ├── stop.sh          # Dừng bot (Linux)
+│   └── push.sh          # Push GitHub (Linux)
+├── 📚 Documentation:
+│   ├── README.md        # Hướng dẫn chính
+│   ├── LINUX-SETUP.md  # Hướng dẫn Linux chi tiết
+│   ├── 24-7-GUIDE.md   # Hướng dẫn chạy 24/7
+│   ├── server-setup.md # Deploy server nâng cao
+│   └── deploy-with-session.md # Deploy bằng session
 ├── test.js             # File test các chức năng
 ├── test-duplicate.js   # Test duplicate prevention
-├── SETUP.md            # Hướng dẫn setup nhanh
+├── ecosystem.config.js # PM2 production config
 ├── settings.json       # Settings runtime (tự tạo)
 ├── bot.pid             # Process ID (tự tạo khi chạy)
-└── README.md           # Hướng dẫn này
+└── .gitignore          # Git ignore patterns
 ```
 
 ## ❗ Lưu ý quan trọng

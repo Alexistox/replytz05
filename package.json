@@ -11,7 +11,12 @@
     "stop": "stop.bat",
     "push": "push.bat",
     "first-login": "first-login.bat",
-    "run-24-7": "run-24-7.bat"
+    "run-24-7": "run-24-7.bat",
+    "linux:stop": "./stop.sh",
+    "linux:push": "./push.sh",
+    "linux:first-login": "./first-login.sh",
+    "linux:run-24-7": "./run-24-7.sh",
+    "linux:run": "./run.sh"
   },
   "dependencies": {
     "telegram": "^2.22.2",
