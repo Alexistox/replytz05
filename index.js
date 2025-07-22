@@ -202,7 +202,7 @@ class BankTransactionUserbot {
       if (messageText.startsWith('/')) {
         // Mark as processed cho commands
         this.processedMessages.set(messageKey, currentTime);
-        await this.handleCommand(messageText, chatId, messageId);
+        await this.handleCommand(messageText, chatId, messageId, message);
         return;
       }
 
@@ -273,7 +273,7 @@ class BankTransactionUserbot {
   }
 
   // Xử lý commands
-  async handleCommand(messageText, chatId, messageId) {
+  async handleCommand(messageText, chatId, messageId, originalMessage = null) {
     const commandData = Utils.parseCommand(messageText);
     if (!commandData) return;
 
@@ -290,6 +290,10 @@ class BankTransactionUserbot {
       
       case '/help':
         await this.handleHelpCommand(chatId, messageId);
+        break;
+      
+      case '/id':
+        await this.handleIdCommand(chatId, messageId, originalMessage);
         break;
     }
   }
@@ -339,7 +343,8 @@ class BankTransactionUserbot {
 📝 Commands:
 /1 on - Bật reply
 /1 off - Tắt reply
-/status - Xem trạng thái
+/status - Xem trạng thái  
+/id - Xem ID chat/user
 /help - Hướng dẫn
     `.trim();
 
@@ -365,12 +370,131 @@ Bot sẽ tự động phát hiện tin nhắn giao dịch ngân hàng và reply 
 /1 off - Tắt chức năng reply
 /1 - Xem trạng thái hiện tại
 /status - Xem thông tin chi tiết
+/id - Xem ID nhóm hiện tại
+/id (reply) - Xem ID của user được reply
 /help - Hiển thị hướng dẫn này
 
 ⚠️ **Lưu ý:** Bot chỉ reply tin nhắn có đầy đủ thông tin giao dịch
     `.trim();
 
     await this.sendReply(chatId, messageId, helpMessage);
+  }
+
+  // Xử lý command /id
+  async handleIdCommand(chatId, messageId, originalMessage = null) {
+    try {
+      // Kiểm tra xem có phải là reply không
+      if (originalMessage && originalMessage.replyTo) {
+        // Đây là reply vào tin nhắn khác, lấy thông tin user được reply
+        await this.handleUserIdCommand(chatId, messageId, originalMessage);
+      } else {
+        // Không phải reply, hiển thị thông tin chat/nhóm
+        await this.handleChatIdCommand(chatId, messageId);
+      }
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý command /id: ${error.message}`);
+      await this.sendReply(chatId, messageId, `❌ Có lỗi xảy ra khi lấy thông tin ID`);
+    }
+  }
+
+  // Xử lý lệnh /id khi reply vào tin nhắn của user khác
+  async handleUserIdCommand(chatId, messageId, originalMessage) {
+    try {
+      // Lấy tin nhắn được reply
+      const replyToMsgId = originalMessage.replyTo.replyToMsgId;
+      const messages = await this.client.getMessages(chatId, {
+        ids: [replyToMsgId]
+      });
+
+      if (messages && messages.length > 0) {
+        const repliedMessage = messages[0];
+        const sender = repliedMessage.sender;
+        
+        if (sender) {
+          let userInfo = `👤 **Thông tin User**\n\n`;
+          userInfo += `🆔 User ID: \`${sender.id.toString()}\`\n`;
+          
+          // Tên người dùng
+          if (sender.firstName) {
+            let fullName = sender.firstName;
+            if (sender.lastName) {
+              fullName += ` ${sender.lastName}`;
+            }
+            userInfo += `📝 Tên: ${fullName}\n`;
+          }
+          
+          // Username
+          if (sender.username) {
+            userInfo += `🔗 Username: @${sender.username}\n`;
+          }
+          
+          // Phone (nếu có và public)
+          if (sender.phone) {
+            userInfo += `📞 Phone: +${sender.phone}\n`;
+          }
+          
+          // Trạng thái
+          if (sender.bot) {
+            userInfo += `🤖 Bot: Có\n`;
+          }
+          
+          if (sender.verified) {
+            userInfo += `✅ Verified: Có\n`;
+          }
+          
+          if (sender.premium) {
+            userInfo += `⭐ Premium: Có\n`;
+          }
+
+          await this.sendReply(chatId, messageId, userInfo);
+        } else {
+          await this.sendReply(chatId, messageId, `❌ Không thể lấy thông tin người gửi tin nhắn được reply`);
+        }
+      } else {
+        await this.sendReply(chatId, messageId, `❌ Không tìm thấy tin nhắn được reply`);
+      }
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi lấy thông tin user: ${error.message}`);
+      await this.sendReply(chatId, messageId, `❌ Không thể lấy thông tin user được reply`);
+    }
+  }
+
+  // Xử lý lệnh /id khi không reply (hiển thị thông tin chat)
+  async handleChatIdCommand(chatId, messageId) {
+    try {
+      // Lấy thông tin về chat hiện tại
+      const chat = await this.client.getEntity(chatId);
+      
+      let chatInfo = `🆔 **ID Chat hiện tại**\n\n`;
+      chatInfo += `📋 Chat ID: \`${chatId.toString()}\`\n`;
+      
+      // Thêm thông tin chi tiết về chat nếu có thể
+      if (chat.title) {
+        chatInfo += `📝 Tên nhóm: ${chat.title}\n`;
+      }
+      
+      if (chat.username) {
+        chatInfo += `🔗 Username: @${chat.username}\n`;
+      }
+      
+      // Xác định loại chat
+      let chatType = 'Chat cá nhân';
+      if (chat.broadcast) {
+        chatType = 'Kênh (Channel)';
+      } else if (chat.megagroup) {
+        chatType = 'Siêu nhóm (Supergroup)';
+      } else if (chat.title && !chat.megagroup) {
+        chatType = 'Nhóm thường';
+      }
+      
+      chatInfo += `📂 Loại: ${chatType}`;
+      
+      await this.sendReply(chatId, messageId, chatInfo);
+      
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi lấy thông tin chat: ${error.message}`);
+      await this.sendReply(chatId, messageId, `❌ Không thể lấy thông tin chat\n\n📋 Chat ID: \`${chatId.toString()}\``);
+    }
   }
 
   // Helper để send reply
