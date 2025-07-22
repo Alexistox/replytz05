@@ -206,6 +206,9 @@ class BankTransactionUserbot {
         return;
       }
 
+      // Kiểm tra pic2 settings trước (không phụ thuộc vào replyEnabled)
+      await this.checkPic2Message(message);
+
       // Kiểm tra nếu chức năng reply đã bật
       if (!this.settings.replyEnabled) return;
 
@@ -295,6 +298,10 @@ class BankTransactionUserbot {
       case '/id':
         await this.handleIdCommand(chatId, messageId, originalMessage);
         break;
+      
+      case '/pic2':
+        await this.handlePic2Command(args, chatId, messageId);
+        break;
     }
   }
 
@@ -332,12 +339,17 @@ class BankTransactionUserbot {
     const hours = Math.floor(uptime / 3600);
     const minutes = Math.floor((uptime % 3600) / 60);
     
+    // Đếm số pic2 settings
+    const pic2Count = this.settings.pic2Settings ? Object.keys(this.settings.pic2Settings).length : 0;
+    const pic2Status = pic2Count > 0 ? `🟢 ${pic2Count} groups` : '🔴 TẮT';
+    
     const statusMessage = `
 📊 **Trạng thái UserBot**
 
 🤖 Bot: Đang hoạt động
 ⚙️ Reply giao dịch: ${status}
 💬 Tin nhắn reply: "${this.settings.replyMessage}"
+📸 Pic2 auto reply: ${pic2Status}
 ⏱️ Uptime: ${hours}h ${minutes}m
 
 📝 Commands:
@@ -345,6 +357,7 @@ class BankTransactionUserbot {
 /1 off - Tắt reply
 /status - Xem trạng thái  
 /id - Xem ID chat/user
+/pic2 - Cấu hình pic2
 /help - Hướng dẫn
     `.trim();
 
@@ -356,28 +369,209 @@ class BankTransactionUserbot {
     const helpMessage = `
 🤖 **Bank Transaction UserBot**
 
-**Chức năng:**
-Bot sẽ tự động phát hiện tin nhắn giao dịch ngân hàng và reply bằng số "1"
+**Chức năng chính:**
+1. Tự động phát hiện tin nhắn giao dịch ngân hàng và reply bằng số "1"
+2. Tự động reply hình ảnh từ user cụ thể trong group cụ thể
 
-**Định dạng tin nhắn được phát hiện:**
+**Định dạng tin nhắn giao dịch:**
 - Tiền vào: +2,000 đ
 - Tài khoản: 20918031 tại ACB  
 - Lúc: 2025-07-20 11:10:22
 - Nội dung CK: ...
 
-**Commands:**
-/1 on - Bật chức năng reply
-/1 off - Tắt chức năng reply
+**Commands - Giao dịch:**
+/1 on - Bật chức năng reply giao dịch
+/1 off - Tắt chức năng reply giao dịch
 /1 - Xem trạng thái hiện tại
-/status - Xem thông tin chi tiết
+
+**Commands - Pic2 (Auto reply hình ảnh):**
+/pic2 on [groupId] [userId/@username] [message] - Bật auto reply
+/pic2 off [groupId] - Tắt auto reply cho group
+/pic2 list - Xem danh sách cấu hình
+
+**Commands - Khác:**
+/status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại
 /id (reply) - Xem ID của user được reply
 /help - Hiển thị hướng dẫn này
 
-⚠️ **Lưu ý:** Bot chỉ reply tin nhắn có đầy đủ thông tin giao dịch
+**Ví dụ Pic2:**
+/pic2 on -1001234567890 @username Xin chào!
+/pic2 on -1001234567890 123456789 Hello world!
+
+⚠️ **Lưu ý:** 
+- Bot chỉ reply tin nhắn có đầy đủ thông tin giao dịch
+- Pic2 chỉ hoạt động khi user gửi hình ảnh (không phải sticker)
     `.trim();
 
     await this.sendReply(chatId, messageId, helpMessage);
+  }
+
+  // Xử lý command /pic2
+  async handlePic2Command(args, chatId, messageId) {
+    if (args.length === 0) {
+      const helpText = `
+📸 **Pic2 Command Usage**
+
+/pic2 on [groupId] [userId/username] [message] - Bật auto reply hình ảnh
+/pic2 off [groupId] - Tắt auto reply hình ảnh
+/pic2 list - Xem danh sách settings hiện tại
+
+**Ví dụ:**
+/pic2 on -1001234567890 @username Hello world!
+/pic2 on -1001234567890 123456789 Xin chào!
+/pic2 off -1001234567890
+      `.trim();
+      
+      await this.sendReply(chatId, messageId, helpText);
+      return;
+    }
+
+    const action = args[0].toLowerCase();
+
+    switch (action) {
+      case 'on':
+        await this.handlePic2OnCommand(args.slice(1), chatId, messageId);
+        break;
+      
+      case 'off':
+        await this.handlePic2OffCommand(args.slice(1), chatId, messageId);
+        break;
+      
+      case 'list':
+        await this.handlePic2ListCommand(chatId, messageId);
+        break;
+      
+      default:
+        await this.sendReply(chatId, messageId, '❗ Sử dụng: /pic2 on/off/list');
+    }
+  }
+
+  // Xử lý /pic2 on
+  async handlePic2OnCommand(args, chatId, messageId) {
+    if (args.length < 3) {
+      await this.sendReply(chatId, messageId, '❗ Sử dụng: /pic2 on [groupId] [userId/username] [message]');
+      return;
+    }
+
+    const groupId = args[0];
+    const targetUser = args[1];
+    const replyMessage = args.slice(2).join(' ');
+
+    try {
+      // Validate groupId
+      if (!groupId.match(/^-?\d+$/)) {
+        await this.sendReply(chatId, messageId, '❌ Group ID không hợp lệ (phải là số)');
+        return;
+      }
+
+      // Validate targetUser (userId hoặc username)
+      let validUser = false;
+      if (targetUser.startsWith('@')) {
+        // Username format
+        validUser = targetUser.length > 1;
+      } else if (targetUser.match(/^\d+$/)) {
+        // User ID format
+        validUser = true;
+      }
+
+      if (!validUser) {
+        await this.sendReply(chatId, messageId, '❌ User ID/Username không hợp lệ');
+        return;
+      }
+
+      // Initialize pic2Settings if not exists
+      if (!this.settings.pic2Settings) {
+        this.settings.pic2Settings = {};
+      }
+
+      // Save settings
+      this.settings.pic2Settings[groupId] = {
+        enabled: true,
+        targetUser: targetUser,
+        replyMessage: replyMessage
+      };
+
+      Utils.saveSettings(this.settings);
+      
+      const userDisplay = targetUser.startsWith('@') ? targetUser : `ID: ${targetUser}`;
+      const successMsg = `✅ Đã BẬT pic2 cho:\n📋 Group: \`${groupId}\`\n👤 User: ${userDisplay}\n💬 Message: "${replyMessage}"`;
+      
+      await this.sendReply(chatId, messageId, successMsg);
+      Utils.log(`🟢 Pic2 BẬT cho group ${groupId}, user ${targetUser}`);
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi bật pic2: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi cấu hình pic2');
+    }
+  }
+
+  // Xử lý /pic2 off
+  async handlePic2OffCommand(args, chatId, messageId) {
+    if (args.length < 1) {
+      await this.sendReply(chatId, messageId, '❗ Sử dụng: /pic2 off [groupId]');
+      return;
+    }
+
+    const groupId = args[0];
+
+    try {
+      // Validate groupId
+      if (!groupId.match(/^-?\d+$/)) {
+        await this.sendReply(chatId, messageId, '❌ Group ID không hợp lệ (phải là số)');
+        return;
+      }
+
+      // Initialize pic2Settings if not exists
+      if (!this.settings.pic2Settings) {
+        this.settings.pic2Settings = {};
+      }
+
+      // Check if settings exists
+      if (!this.settings.pic2Settings[groupId]) {
+        await this.sendReply(chatId, messageId, `❌ Không tìm thấy cấu hình pic2 cho group: \`${groupId}\``);
+        return;
+      }
+
+      // Remove settings
+      delete this.settings.pic2Settings[groupId];
+      Utils.saveSettings(this.settings);
+      
+      await this.sendReply(chatId, messageId, `✅ Đã TẮT pic2 cho group: \`${groupId}\``);
+      Utils.log(`🔴 Pic2 TẮT cho group ${groupId}`);
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi tắt pic2: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi tắt pic2');
+    }
+  }
+
+  // Xử lý /pic2 list
+  async handlePic2ListCommand(chatId, messageId) {
+    try {
+      if (!this.settings.pic2Settings || Object.keys(this.settings.pic2Settings).length === 0) {
+        await this.sendReply(chatId, messageId, '📝 Chưa có cấu hình pic2 nào');
+        return;
+      }
+
+      let listMsg = '📸 **Danh sách Pic2 Settings**\n\n';
+      
+      for (const [groupId, config] of Object.entries(this.settings.pic2Settings)) {
+        const status = config.enabled ? '🟢 BẬT' : '🔴 TẮT';
+        const userDisplay = config.targetUser.startsWith('@') ? config.targetUser : `ID: ${config.targetUser}`;
+        
+        listMsg += `**Group:** \`${groupId}\`\n`;
+        listMsg += `**Status:** ${status}\n`;
+        listMsg += `**User:** ${userDisplay}\n`;
+        listMsg += `**Message:** "${config.replyMessage}"\n\n`;
+      }
+
+      await this.sendReply(chatId, messageId, listMsg.trim());
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xem danh sách pic2: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi xem danh sách');
+    }
   }
 
   // Xử lý command /id
@@ -494,6 +688,63 @@ Bot sẽ tự động phát hiện tin nhắn giao dịch ngân hàng và reply 
     } catch (error) {
       Utils.log(`❌ Lỗi khi lấy thông tin chat: ${error.message}`);
       await this.sendReply(chatId, messageId, `❌ Không thể lấy thông tin chat\n\n📋 Chat ID: \`${chatId.toString()}\``);
+    }
+  }
+
+  // Kiểm tra và xử lý pic2 message
+  async checkPic2Message(message) {
+    try {
+      // Kiểm tra có pic2Settings không
+      if (!this.settings.pic2Settings || Object.keys(this.settings.pic2Settings).length === 0) {
+        return;
+      }
+
+      const chatId = message.chatId.toString();
+      const pic2Config = this.settings.pic2Settings[chatId];
+
+      // Kiểm tra có config cho group này không
+      if (!pic2Config || !pic2Config.enabled) {
+        return;
+      }
+
+      // Kiểm tra tin nhắn có hình ảnh không
+      if (!Utils.hasPhoto(message)) {
+        return;
+      }
+
+      // Lấy thông tin sender
+      const sender = message.sender;
+      if (!sender) {
+        return;
+      }
+
+      // Kiểm tra có phải target user không
+      if (!Utils.isTargetUser(sender, pic2Config.targetUser)) {
+        return;
+      }
+
+      // Tạo unique key để tránh duplicate
+      const pic2Key = `pic2_${chatId}_${message.id}`;
+      
+      // Kiểm tra đã process chưa
+      if (this.processedMessages.has(pic2Key)) {
+        return;
+      }
+
+      // Mark as processed
+      this.processedMessages.set(pic2Key, Date.now());
+
+      // Reply với message đã cấu hình
+      await this.client.sendMessage(message.chatId, {
+        message: pic2Config.replyMessage,
+        replyTo: message.id
+      });
+
+      const userDisplay = sender.username ? `@${sender.username}` : `ID: ${sender.id}`;
+      Utils.log(`📸 Pic2 reply: ${userDisplay} gửi hình trong group ${chatId} -> reply: "${pic2Config.replyMessage}"`);
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý pic2: ${error.message}`);
     }
   }
 

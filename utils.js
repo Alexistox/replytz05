@@ -80,6 +80,48 @@ class Utils {
       content: contentMatch ? contentMatch[1].trim() : null
     };
   }
+
+  // Kiểm tra tin nhắn có hình ảnh không
+  static hasPhoto(message) {
+    if (!message) return false;
+    
+    // Kiểm tra message có media không
+    if (message.media) {
+      // Kiểm tra các loại media chứa hình ảnh
+      if (message.media.className === 'MessageMediaPhoto') {
+        return true;
+      }
+      
+      // Kiểm tra document (có thể là sticker, GIF, hoặc file hình ảnh)
+      if (message.media.className === 'MessageMediaDocument') {
+        const document = message.media.document;
+        if (document && document.mimeType) {
+          // Kiểm tra MIME type của hình ảnh
+          return document.mimeType.startsWith('image/');
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  // Kiểm tra user match với target (username hoặc user ID)
+  static isTargetUser(sender, targetUser) {
+    if (!sender || !targetUser) return false;
+    
+    // Kiểm tra username
+    if (targetUser.startsWith('@')) {
+      const username = targetUser.slice(1); // Remove @
+      return sender.username && sender.username.toLowerCase() === username.toLowerCase();
+    }
+    
+    // Kiểm tra user ID
+    if (targetUser.match(/^\d+$/)) {
+      return sender.id && sender.id.toString() === targetUser;
+    }
+    
+    return false;
+  }
 }
 
 module.exports = Utils; 
