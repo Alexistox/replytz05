@@ -15,8 +15,30 @@ class BankTransactionUserbot {
     this.processingMessages = new Set(); // Track currently processing messages
     this.eventHandlerRegistered = false; // Prevent duplicate event handlers
     
+    // Migrate old settings format if needed
+    this.migrateOldSettings();
+    
     Utils.log('🤖 Bank Transaction Userbot khởi tạo');
-    Utils.log(`📊 Trạng thái reply: ${this.settings.replyEnabled ? 'BẬT' : 'TẮT'}`);
+    Utils.log(`📊 Chế độ: Reply theo từng nhóm`);
+  }
+
+  // Migrate từ format cũ (global replyEnabled) sang format mới (group-specific)
+  migrateOldSettings() {
+    if (this.settings.hasOwnProperty('replyEnabled')) {
+      Utils.log('🔄 Phát hiện settings format cũ, đang migrate...');
+      
+      // Initialize groupSettings if not exists
+      if (!this.settings.groupSettings) {
+        this.settings.groupSettings = {};
+      }
+      
+      // Remove old global setting
+      delete this.settings.replyEnabled;
+      
+      // Save migrated settings
+      Utils.saveSettings(this.settings);
+      Utils.log('✅ Đã migrate settings sang format mới (group-specific)');
+    }
   }
 
   // Khởi tạo client Telegram
@@ -209,8 +231,10 @@ class BankTransactionUserbot {
       // Kiểm tra pic2 settings trước (không phụ thuộc vào replyEnabled)
       await this.checkPic2Message(message);
 
-      // Kiểm tra nếu chức năng reply đã bật
-      if (!this.settings.replyEnabled) return;
+      // Kiểm tra nếu chức năng reply đã bật cho group này
+      const groupId = chatId.toString();
+      const groupSettings = this.settings.groupSettings?.[groupId] || { replyEnabled: false };
+      if (!groupSettings.replyEnabled) return;
 
       // Kiểm tra xem có phải tin nhắn giao dịch không
       if (Utils.isTransactionMessage(messageText)) {
@@ -305,27 +329,37 @@ class BankTransactionUserbot {
     }
   }
 
-  // Xử lý command /1 on/off
+  // Xử lý command /1 on/off (theo từng group)
   async handleReplyCommand(args, chatId, messageId) {
+    const groupId = chatId.toString();
+    
+    // Initialize groupSettings if not exists
+    if (!this.settings.groupSettings) {
+      this.settings.groupSettings = {};
+    }
+    
+    // Get current group settings
+    const currentGroupSettings = this.settings.groupSettings[groupId] || { replyEnabled: false };
+    
     if (args.length === 0) {
-      const status = this.settings.replyEnabled ? 'BẬT' : 'TẮT';
-      await this.sendReply(chatId, messageId, `⚙️ Trạng thái hiện tại: ${status}\nDùng /1 on để bật, /1 off để tắt`);
+      const status = currentGroupSettings.replyEnabled ? 'BẬT' : 'TẮT';
+      await this.sendReply(chatId, messageId, `⚙️ Trạng thái reply cho nhóm này: ${status}\nDùng /1 on để bật, /1 off để tắt`);
       return;
     }
 
     const action = args[0].toLowerCase();
     
     if (action === 'on') {
-      this.settings.replyEnabled = true;
+      this.settings.groupSettings[groupId] = { replyEnabled: true };
       Utils.saveSettings(this.settings);
-      Utils.log('🟢 Chức năng reply đã BẬT');
-      await this.sendReply(chatId, messageId, '✅ Đã BẬT chức năng reply giao dịch');
+      Utils.log(`🟢 Chức năng reply đã BẬT cho group ${groupId}`);
+      await this.sendReply(chatId, messageId, '✅ Đã BẬT chức năng reply giao dịch cho nhóm này');
       
     } else if (action === 'off') {
-      this.settings.replyEnabled = false;
+      this.settings.groupSettings[groupId] = { replyEnabled: false };
       Utils.saveSettings(this.settings);
-      Utils.log('🔴 Chức năng reply đã TẮT');
-      await this.sendReply(chatId, messageId, '❌ Đã TẮT chức năng reply giao dịch');
+      Utils.log(`🔴 Chức năng reply đã TẮT cho group ${groupId}`);
+      await this.sendReply(chatId, messageId, '❌ Đã TẮT chức năng reply giao dịch cho nhóm này');
       
     } else {
       await this.sendReply(chatId, messageId, '❗ Sử dụng: /1 on hoặc /1 off');
@@ -334,10 +368,17 @@ class BankTransactionUserbot {
 
   // Xử lý command /status
   async handleStatusCommand(chatId, messageId) {
-    const status = this.settings.replyEnabled ? '🟢 BẬT' : '🔴 TẮT';
+    const groupId = chatId.toString();
+    const groupSettings = this.settings.groupSettings?.[groupId] || { replyEnabled: false };
+    const status = groupSettings.replyEnabled ? '🟢 BẬT' : '🔴 TẮT';
     const uptime = process.uptime();
     const hours = Math.floor(uptime / 3600);
     const minutes = Math.floor((uptime % 3600) / 60);
+    
+    // Đếm số group đã bật reply
+    const groupReplyCount = this.settings.groupSettings ? 
+      Object.values(this.settings.groupSettings).filter(g => g.replyEnabled).length : 0;
+    const groupReplyStatus = groupReplyCount > 0 ? `🟢 ${groupReplyCount} groups` : '🔴 TẮT';
     
     // Đếm số pic2 settings
     const pic2Count = this.settings.pic2Settings ? Object.keys(this.settings.pic2Settings).length : 0;
@@ -347,14 +388,15 @@ class BankTransactionUserbot {
 📊 **Trạng thái UserBot**
 
 🤖 Bot: Đang hoạt động
-⚙️ Reply giao dịch: ${status}
+⚙️ Reply giao dịch (nhóm này): ${status}
+🌐 Reply giao dịch (tổng): ${groupReplyStatus}
 💬 Tin nhắn reply: "${this.settings.replyMessage}"
 📸 Pic2 auto reply: ${pic2Status}
 ⏱️ Uptime: ${hours}h ${minutes}m
 
 📝 Commands:
-/1 on - Bật reply
-/1 off - Tắt reply
+/1 on - Bật reply cho nhóm này
+/1 off - Tắt reply cho nhóm này
 /status - Xem trạng thái  
 /id - Xem ID chat/user
 /pic2 - Cấu hình pic2
@@ -380,9 +422,9 @@ class BankTransactionUserbot {
 - Nội dung CK: ...
 
 **Commands - Giao dịch:**
-/1 on - Bật chức năng reply giao dịch
-/1 off - Tắt chức năng reply giao dịch
-/1 - Xem trạng thái hiện tại
+/1 on - Bật chức năng reply giao dịch cho nhóm này
+/1 off - Tắt chức năng reply giao dịch cho nhóm này
+/1 - Xem trạng thái nhóm hiện tại
 
 **Commands - Pic2 (Auto reply hình ảnh):**
 /pic2 on [groupId] [userId/@username] [message] - Bật auto reply

@@ -14,9 +14,8 @@ module.exports = {
   
   // Default settings
   defaultSettings: {
-    replyEnabled: false, // Mặc định tắt
-    targetChats: [], // Danh sách chat để monitor (để trống = tất cả)
     replyMessage: '1', // Tin nhắn reply
+    groupSettings: {}, // Settings reply theo từng group: { [groupId]: { replyEnabled: boolean } }
     pic2Settings: {} // Settings cho tính năng pic2 theo từng group
   }
 }; 
