@@ -987,10 +987,14 @@ class BankTransactionUserbot {
       if (result.success) {
         Utils.saveSettings(this.settings);
         
+        // Lấy tên nhóm để hiển thị
+        const sourceGroupInfo = await this.formatGroupInfo(sourceGroupId);
+        const destGroupInfo = await this.formatGroupInfo(destGroupId);
+        
         const successMsg = `✅ **Đã thiết lập chuyển tiếp tự động:**
 
-📤 **Từ nhóm:** \`${sourceGroupId}\`
-📥 **Đến nhóm:** \`${destGroupId}\`
+📤 **Từ nhóm:** ${sourceGroupInfo}
+📥 **Đến nhóm:** ${destGroupInfo}
 🔤 **Trigger:** ${Utils.hasEmoji(trigger) ? trigger : `\`${trigger}\``}
 👤 **Tạo bởi:** ${createdBy}
 
@@ -1051,6 +1055,23 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     }
   }
 
+  // Helper function để lấy tên nhóm từ ID
+  async getGroupName(groupId) {
+    try {
+      const chat = await this.client.getEntity(groupId);
+      return chat.title || 'Không có tên';
+    } catch (error) {
+      Utils.log(`⚠️ Không thể lấy tên nhóm ${groupId}: ${error.message}`);
+      return 'Không xác định';
+    }
+  }
+
+  // Helper function để format group info với tên
+  async formatGroupInfo(groupId) {
+    const groupName = await this.getGroupName(groupId);
+    return `\`${groupId}\` | ${groupName}`;
+  }
+
   // Xử lý command /listforward
   async handleListForwardCommand(chatId, messageId) {
     try {
@@ -1063,16 +1084,21 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
       let message = '📋 **Danh sách rules chuyển tiếp tự động:**\n\n';
       
-      activeRules.forEach((rule, index) => {
+      for (let index = 0; index < activeRules.length; index++) {
+        const rule = activeRules[index];
         const createdDate = Utils.formatDate(rule.createdTime);
         const triggerDisplay = Utils.hasEmoji(rule.trigger) ? rule.trigger : `\`${rule.trigger}\``;
         
-        message += `**${index + 1}.** 📤 Từ: \`${rule.sourceGroupId}\`\n`;
-        message += `   📥 Đến: \`${rule.destGroupId}\`\n`;
+        // Lấy tên nhóm cho source và destination
+        const sourceGroupInfo = await this.formatGroupInfo(rule.sourceGroupId);
+        const destGroupInfo = await this.formatGroupInfo(rule.destGroupId);
+        
+        message += `**${index + 1}.** 📤 Từ: ${sourceGroupInfo}\n`;
+        message += `   📥 Đến: ${destGroupInfo}\n`;
         message += `   🔤 Trigger: ${triggerDisplay}\n`;
         message += `   👤 Tạo bởi: ${rule.createdBy}\n`;
         message += `   📅 Ngày tạo: ${createdDate}\n\n`;
-      });
+      }
 
       await this.sendReply(chatId, messageId, message.trim());
 
