@@ -8,11 +8,7 @@ UserBot Telegram tự động phát hiện và reply tin nhắn giao dịch ngâ
 
 - 🔍 **Tự động phát hiện tin nhắn giao dịch** với định dạng:
   ```
-  Tiền vào: +2,000 đ
-  Tài khoản: 20918031 tại ACB
-  Lúc: 2025-07-20 11:10:22
-  Nội dung CK: NGUYEN THI LAN chuyen tien GD 166915-072025 11:10:21
-  ```
+  
 
 - 💬 **Tự động reply** bằng số "1" khi phát hiện tin nhắn giao dịch
   - 👥 Reply tin nhắn từ **người khác**
