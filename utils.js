@@ -322,6 +322,85 @@ class Utils {
     };
   }
 
+  // ================= FORWARD2 RULES FUNCTIONS =================
+  
+  // Thêm forward2 rule mới (forward từ bất kỳ nhóm nào đến 1 nhóm cụ thể)
+  static addForward2Rule(settings, destGroupId, trigger, createdBy) {
+    if (!settings.forward2Rules) {
+      settings.forward2Rules = [];
+    }
+
+    // Normalize trigger
+    const normalizedTrigger = Utils.normalizeTrigger(trigger);
+
+    // Kiểm tra rule đã tồn tại chưa
+    const existingRule = settings.forward2Rules.find(rule => 
+      rule.destGroupId === destGroupId && 
+      rule.trigger === normalizedTrigger
+    );
+    
+    if (existingRule) {
+      return { success: false, message: 'Rule forward2 đã tồn tại!' };
+    }
+    
+    // Thêm rule mới
+    const newRule = {
+      destGroupId: destGroupId,
+      trigger: normalizedTrigger,
+      createdBy: createdBy,
+      createdTime: new Date().toISOString(),
+      status: "active"
+    };
+    
+    settings.forward2Rules.push(newRule);
+    return { success: true, rule: newRule };
+  }
+
+  // Xóa forward2 rule
+  static removeForward2Rule(settings, destGroupId, trigger) {
+    if (!settings.forward2Rules) {
+      return { success: false, message: 'Không tìm thấy rule forward2 nào!' };
+    }
+
+    const normalizedTrigger = Utils.normalizeTrigger(trigger);
+    
+    const index = settings.forward2Rules.findIndex(rule => 
+      rule.destGroupId === destGroupId && 
+      rule.trigger === normalizedTrigger
+    );
+    
+    if (index !== -1) {
+      const removedRule = settings.forward2Rules[index];
+      settings.forward2Rules.splice(index, 1);
+      return { success: true, rule: removedRule };
+    }
+    
+    return { success: false, message: 'Không tìm thấy rule forward2 này!' };
+  }
+
+  // Tìm forward2 rule phù hợp (forward từ bất kỳ nhóm nào)
+  static findForward2Rule(settings, trigger) {
+    if (!settings.forward2Rules) {
+      return null;
+    }
+
+    const normalizedTrigger = Utils.normalizeTrigger(trigger);
+
+    return settings.forward2Rules.find(rule => 
+      rule.trigger === normalizedTrigger && 
+      rule.status === "active"
+    );
+  }
+
+  // Lấy tất cả active forward2 rules
+  static getActiveForward2Rules(settings) {
+    if (!settings.forward2Rules) {
+      return [];
+    }
+
+    return settings.forward2Rules.filter(rule => rule.status === "active");
+  }
+
   // ================== ADMIN MANAGEMENT ==================
 
   // Add admin user

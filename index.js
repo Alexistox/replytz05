@@ -457,6 +457,30 @@ class BankTransactionUserbot {
         }
           await this.handleListForwardCommand(chatId, messageId);
           break;
+      
+      case '/setforward2':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+        await this.handleSetForward2Command(args, chatId, messageId, originalMessage);
+        break;
+      
+      case '/removeforward2':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+        await this.handleRemoveForward2Command(args, chatId, messageId);
+        break;
+      
+      case '/listforward2':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+        await this.handleListForward2Command(chatId, messageId);
+        break;
         case '/groups':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
           await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
@@ -543,6 +567,10 @@ class BankTransactionUserbot {
     const forwardCount = Utils.getActiveForwardRules(this.settings).length;
     const forwardStatus = forwardCount > 0 ? `🟢 ${forwardCount} rules` : '🔴 TẮT';
     
+    // Đếm số forward2 rules
+    const forward2Count = Utils.getActiveForward2Rules(this.settings).length;
+    const forward2Status = forward2Count > 0 ? `🟢 ${forward2Count} rules` : '🔴 TẮT';
+    
     // Đếm số admin users
     const adminCount = Utils.getAdminList(this.settings).length;
     const adminStatus = adminCount > 0 ? `🟢 ${adminCount} admins` : '🔴 NONE';
@@ -556,6 +584,7 @@ class BankTransactionUserbot {
 💬 Tin nhắn reply: "${this.settings.replyMessage}"
 📸 Pic2 auto reply: ${pic2Status}
 🔄 Auto forward: ${forwardStatus}
+🌐 Global forward2: ${forward2Status}
 👑 Admin users: ${adminStatus}
 👍 Reaction support: 🟢 BẬT (reply + admin reaction modes)
 ⏱️ Uptime: ${hours}h ${minutes}m
@@ -569,7 +598,9 @@ class BankTransactionUserbot {
 /groups - Danh sách groups 👑
 /pic2 - Cấu hình pic2 👑
 /setforward - Thiết lập auto-forward 👑
+/setforward2 - Thiết lập global forward 👑
 /listforward - Xem forward rules 👑
+/listforward2 - Xem global forward rules 👑
 /help - Hướng dẫn
 
 👑 = Admin only commands
@@ -609,14 +640,28 @@ class BankTransactionUserbot {
 /removeforward [groupA] [groupB] [trigger] - Xóa rule forward
 /listforward - Xem danh sách rules forward
 
+**Commands - Forward2 (Chuyển tiếp toàn cầu):**
+/setforward2 [groupDích] [trigger] - Thiết lập global forward
+/removeforward2 [groupDích] [trigger] - Xóa rule forward2
+/listforward2 - Xem danh sách rules forward2
+
 **Cách sử dụng Forward:**
 🔹 **Reply method:** Reply tin nhắn + gõ trigger
 🔹 **Reaction method:** Admin react emoji trigger vào tin nhắn (👑 chỉ admin!)
+
+**Khác biệt Forward vs Forward2:**
+🔹 **Forward:** Nhóm A → Nhóm B (cụ thể, mọi user)
+🔹 **Forward2:** Bất kỳ nhóm → Nhóm đích (toàn cầu, chỉ admin)
 
 **Ví dụ Forward:**
 /setforward -1001234567890 -987654321 📋
 /setforward -1001234567890 -987654321 🔄
 /setforward -1001234567890 -987654321 copy
+
+**Ví dụ Forward2:**
+/setforward2 -1001234567890 🌐
+/setforward2 -987654321 global
+/setforward2 -555666777 📡
 
 **Commands - Admin:**
 /ad @username - Thêm admin
@@ -929,6 +974,155 @@ class BankTransactionUserbot {
   }
 
   // ================= FORWARD COMMANDS HANDLERS =================
+
+  // Xử lý command /setforward2 (forward từ bất kỳ nhóm nào đến 1 nhóm cụ thể)
+  async handleSetForward2Command(args, chatId, messageId, originalMessage) {
+    try {
+      if (args.length < 2) {
+        const helpText = `❗ **Cú pháp:**
+/setforward2 [ID_nhóm_đích] [trigger]
+
+**Chức năng:**
+Khi admin reply trigger ở BẤT KỲ nhóm nào có userbot, tin nhắn sẽ được chuyển đến nhóm đích được set.
+
+**Ví dụ Text Trigger:**
+/setforward2 -1001234567890 global
+/setforward2 -987654321 broadcast
+
+**Ví dụ Emoji Trigger:**
+/setforward2 -1001234567890 🌐
+/setforward2 -987654321 📡
+
+**Khác biệt với /setforward:**
+- /setforward: Nhóm A → Nhóm B (cụ thể)  
+- /setforward2: Bất kỳ nhóm → Nhóm đích (toàn cầu)`;
+        
+        await this.sendReply(chatId, messageId, helpText);
+        return;
+      }
+
+      const destGroupId = args[0];
+      const trigger = args[1].toLowerCase();
+
+      // Validate Group ID
+      if (!Utils.isValidGroupId(destGroupId)) {
+        await this.sendReply(chatId, messageId, '❌ ID nhóm đích không hợp lệ (phải bắt đầu bằng -)');
+        return;
+      }
+
+      // Lấy thông tin người tạo
+      const sender = originalMessage?.sender;
+      const createdBy = sender?.username ? `@${sender.username}` : 
+                      sender?.firstName ? sender.firstName : 
+                      'Unknown';
+
+      // Thêm forward2 rule
+      const result = Utils.addForward2Rule(this.settings, destGroupId, trigger, createdBy);
+      
+      if (result.success) {
+        Utils.saveSettings(this.settings);
+        
+        // Lấy tên nhóm để hiển thị
+        const destGroupInfo = await this.formatGroupInfo(destGroupId);
+        
+        const successMsg = `✅ **Đã thiết lập Forward2 (Global):**
+
+🌐 **Từ:** Bất kỳ nhóm nào có userbot
+📥 **Đến nhóm:** ${destGroupInfo}
+🔤 **Trigger:** ${Utils.hasEmoji(trigger) ? trigger : `\`${trigger}\``}
+👤 **Tạo bởi:** ${createdBy}
+
+**Cách sử dụng:**
+Admin reply vào tin nhắn bất kỳ và nhập ${Utils.hasEmoji(trigger) ? `emoji ${trigger}` : `"${trigger}"`} ở bất kỳ nhóm nào có userbot`;
+
+        await this.sendReply(chatId, messageId, successMsg);
+        Utils.log(`🟢 Forward2 rule added: ANY_GROUP -> ${destGroupId} (trigger: ${trigger})`);
+      } else {
+        await this.sendReply(chatId, messageId, `❌ ${result.message}`);
+      }
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /setforward2: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi thiết lập forward2 rule');
+    }
+  }
+
+  // Xử lý command /removeforward2
+  async handleRemoveForward2Command(args, chatId, messageId) {
+    try {
+      if (args.length < 2) {
+        const helpText = `❗ **Cú pháp:**
+/removeforward2 [ID_nhóm_đích] [trigger]
+
+**Ví dụ:**
+/removeforward2 -1001234567890 global`;
+        
+        await this.sendReply(chatId, messageId, helpText);
+        return;
+      }
+
+      const destGroupId = args[0];
+      const trigger = args[1].toLowerCase();
+
+      // Xóa forward2 rule
+      const result = Utils.removeForward2Rule(this.settings, destGroupId, trigger);
+      
+      if (result.success) {
+        Utils.saveSettings(this.settings);
+        
+        const destGroupInfo = await this.formatGroupInfo(destGroupId);
+        
+        const successMsg = `✅ **Đã xóa Forward2 rule:**
+
+📥 **Nhóm đích:** ${destGroupInfo}
+🔤 **Trigger:** ${Utils.hasEmoji(trigger) ? trigger : `\`${trigger}\``}`;
+
+        await this.sendReply(chatId, messageId, successMsg);
+        Utils.log(`🔴 Forward2 rule removed: ANY_GROUP -> ${destGroupId} (trigger: ${trigger})`);
+      } else {
+        await this.sendReply(chatId, messageId, `❌ ${result.message}`);
+      }
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /removeforward2: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi xóa forward2 rule');
+    }
+  }
+
+  // Xử lý command /listforward2
+  async handleListForward2Command(chatId, messageId) {
+    try {
+      const activeRules = Utils.getActiveForward2Rules(this.settings);
+      
+      if (activeRules.length === 0) {
+        await this.sendReply(chatId, messageId, '📝 Chưa có Forward2 rule nào được thiết lập.');
+        return;
+      }
+
+      let message = '🌐 **Danh sách Forward2 rules (Global):**\n\n';
+      
+      for (let index = 0; index < activeRules.length; index++) {
+        const rule = activeRules[index];
+        const createdDate = Utils.formatDate(rule.createdTime);
+        const triggerDisplay = Utils.hasEmoji(rule.trigger) ? rule.trigger : `\`${rule.trigger}\``;
+        
+        // Lấy tên nhóm đích
+        const destGroupInfo = await this.formatGroupInfo(rule.destGroupId);
+        
+        message += `**${index + 1}.** 🌐 Từ: **Bất kỳ nhóm nào**\n`;
+        message += `   📥 Đến: ${destGroupInfo}\n`;
+        message += `   🔤 Trigger: ${triggerDisplay}\n`;
+        message += `   👤 Tạo bởi: ${rule.createdBy}\n`;
+        message += `   📅 Ngày tạo: ${createdDate}\n\n`;
+      }
+
+      await this.sendReply(chatId, messageId, message.trim());
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /listforward2: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi xem danh sách forward2 rules');
+    }
+  }
 
   // Xử lý command /setforward
   async handleSetForwardCommand(args, chatId, messageId, originalMessage) {
@@ -1349,10 +1543,28 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
       const chatId = message.chatId.toString();
       const trigger = Utils.normalizeTrigger(messageText);
+      const senderId = message.senderId?.toString();
 
-      // Tìm forward rule phù hợp
+      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B)
       const rule = Utils.findForwardRule(this.settings, chatId, trigger);
-      if (!rule) return;
+      
+      // 2. Kiểm tra Forward2 rule (bất kỳ nhóm → nhóm đích, chỉ admin)
+      const forward2Rule = Utils.findForward2Rule(this.settings, trigger);
+      
+      // Nếu không có rule nào thì return
+      if (!rule && !forward2Rule) return;
+      
+      // Nếu có forward2 rule nhưng user không phải admin thì chỉ xử lý forward thường
+      let activeRule = rule;
+      let isForward2 = false;
+      
+      if (forward2Rule && this.isOwnerOrAdmin(senderId)) {
+        activeRule = forward2Rule;
+        isForward2 = true;
+      } else if (!rule) {
+        // Nếu chỉ có forward2 rule mà user không phải admin thì return
+        return;
+      }
 
       // Lấy tin nhắn được reply
       const replyToMsgId = message.replyTo.replyToMsgId;
@@ -1375,7 +1587,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       }
 
       // Tạo unique key để tránh duplicate auto-forward
-      const autoForwardKey = `autoforward_${chatId}_${replyToMsgId}_${trigger}`;
+      const forwardType = isForward2 ? 'forward2' : 'forward';
+      const autoForwardKey = `${forwardType}_${chatId}_${replyToMsgId}_${trigger}`;
       if (this.processedMessages.has(autoForwardKey)) {
         return;
       }
@@ -1384,7 +1597,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       this.processedMessages.set(autoForwardKey, Date.now());
 
       // Copy tin nhắn
-      const result = await this.copyMessage(originalMessage, rule.destGroupId);
+      const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
       
       if (result.success) {
         const messageType = Utils.getMessageType(originalMessage);
@@ -1392,13 +1605,14 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
           `@${originalMessage.sender.username}` : 
           originalMessage.sender?.firstName || 'Unknown';
         
-        Utils.log(`🤖 Auto-forward: ${messageType} từ ${originalSender} (${chatId} -> ${rule.destGroupId}, trigger: ${trigger})`);
+        const forwardPrefix = isForward2 ? '🌐 Forward2' : '🤖 Forward';
+        Utils.log(`${forwardPrefix}: ${messageType} từ ${originalSender} (${chatId} -> ${activeRule.destGroupId}, trigger: ${trigger})`);
         
         // Thông báo thành công với thông tin album nếu có
-        let successMessage = ``;
+        let successMessage = isForward2 ? `` : `🤖 Auto-forward`;
         
         if (result.albumSize) {
-          successMessage += `\n📸 Album: ${result.albumSize} items`;
+          successMessage += ``;
           if (result.method === 'forward') {
             successMessage += ` (forwarded album)`;
           } else if (result.method === 'sendFile') {
@@ -1447,14 +1661,32 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
       Utils.log(`🎯 Admin ${reactorUserId} reaction emoji: ${reactionEmoji} in chat ${chatId}`);
 
-      // Tìm forward rule matching với reaction emoji
+      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B)
       const rule = Utils.findForwardRule(this.settings, chatId, reactionEmoji);
-      if (!rule) {
-        Utils.log(`❌ Không tìm thấy forward rule cho emoji: ${reactionEmoji} trong chat ${chatId}`);
+      
+      // 2. Kiểm tra Forward2 rule (bất kỳ nhóm → nhóm đích, chỉ admin)
+      const forward2Rule = Utils.findForward2Rule(this.settings, reactionEmoji);
+      
+      // Nếu không có rule nào thì return
+      if (!rule && !forward2Rule) {
+        Utils.log(`❌ Không tìm thấy forward/forward2 rule cho emoji: ${reactionEmoji} trong chat ${chatId}`);
+        return;
+      }
+      
+      // Ưu tiên forward2 rule nếu admin, nếu không thì dùng forward thường
+      let activeRule = rule;
+      let isForward2 = false;
+      
+      if (forward2Rule) {
+        activeRule = forward2Rule;
+        isForward2 = true;
+      } else if (!rule) {
         return;
       }
 
-      Utils.log(`✅ Tìm thấy forward rule: ${chatId} -> ${rule.destGroupId} với trigger: ${reactionEmoji} (triggered by admin ${reactorUserId})`);
+      const ruleType = isForward2 ? 'forward2' : 'forward';
+      const sourceInfo = isForward2 ? 'ANY_GROUP' : activeRule.sourceGroupId;
+      Utils.log(`✅ Tìm thấy ${ruleType} rule: ${sourceInfo} -> ${activeRule.destGroupId} với trigger: ${reactionEmoji} (triggered by admin ${reactorUserId})`);
 
       // Kiểm tra xem tin nhắn có thể copy không
       if (!Utils.canCopyMessage(originalMessage)) {
@@ -1463,11 +1695,13 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       }
 
       // Thực hiện copy message
-      Utils.log(`🚀 Admin ${reactorUserId} auto-forward: ${reactionEmoji} từ ${rule.sourceGroupId} đến ${rule.destGroupId}`);
+      const forwardPrefix = isForward2 ? '🌐 Admin Forward2' : '🚀 Admin Forward';
+      Utils.log(`${forwardPrefix}: ${reactionEmoji} từ ${chatId} đến ${activeRule.destGroupId} by ${reactorUserId}`);
       
-      const result = await this.copyMessage(originalMessage, rule.destGroupId);
+      const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
       if (result.success) {
-        let successMessage = `🤖 Admin ${reactorUserId} đã chuyển tiếp qua reaction ${reactionEmoji} đến nhóm \`${rule.destGroupId}\``;
+        const reactionType = isForward2 ? 'global reaction' : 'reaction';
+        let successMessage = `${isForward2 ? '🌐' : '🤖'} Admin ${reactorUserId} đã chuyển tiếp qua ${reactionType} ${reactionEmoji} đến nhóm \`${activeRule.destGroupId}\``;
         
         if (result.albumSize) {
           successMessage += `\n📸 Album: ${result.albumSize} items`;
