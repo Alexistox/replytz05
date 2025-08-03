@@ -1,6 +1,6 @@
 const { TelegramClient } = require('telegram');
 const { StringSession } = require('telegram/sessions');
-const { NewMessage } = require('telegram/events');
+const { NewMessage, Raw } = require('telegram/events');
 const readline = require('readline');
 
 const config = require('./config');
@@ -184,6 +184,18 @@ class BankTransactionUserbot {
       }
     }, new NewMessage({}));
 
+    // Lắng nghe reactions via Raw events
+    this.client.addEventHandler(async (event) => {
+      try {
+        // Filter cho UpdateMessageReactions
+        if (event.className === 'UpdateMessageReactions') {
+          await this.handleMessageReaction(event);
+        }
+      } catch (error) {
+        Utils.log(`❌ Lỗi xử lý reaction: ${error.message}`);
+      }
+    }, new Raw({}));
+
     this.eventHandlerRegistered = true;
     Utils.log('📱 Đã đăng ký event handlers');
   }
@@ -231,7 +243,12 @@ class BankTransactionUserbot {
       // Kiểm tra pic2 settings trước (không phụ thuộc vào replyEnabled)
       await this.checkPic2Message(message);
 
-      // Kiểm tra nếu chức năng reply đã bật cho group này
+      // Kiểm tra auto-forward trước (không phụ thuộc vào replyEnabled)
+      if (message.replyTo) {
+        await this.checkAutoForwardMessage(message);
+      }
+
+      // Kiểm tra nếq chức năng reply đã bật cho group này
       const groupId = chatId.toString();
       const groupSettings = this.settings.groupSettings?.[groupId] || { replyEnabled: false };
       if (!groupSettings.replyEnabled) return;
@@ -258,6 +275,92 @@ class BankTransactionUserbot {
     if (this.processedMessages.size > 1000) {
       const oldEntries = Array.from(this.processedMessages.entries()).slice(0, 500);
       oldEntries.forEach(([key]) => this.processedMessages.delete(key));
+    }
+  }
+
+  // Xử lý message reactions
+  async handleMessageReaction(event) {
+    try {
+      // Parse UpdateMessageReactions event structure
+      let chatId;
+      if (event.peer && event.peer.channelId) {
+        // For channels/supergroups
+        chatId = `-100${event.peer.channelId}`;
+      } else if (event.peer && event.peer.chatId) {
+        // For regular groups  
+        chatId = `-${event.peer.chatId}`;
+      } else if (event.peer && event.peer.userId) {
+        // For private chats
+        chatId = event.peer.userId;
+      } else {
+        Utils.log(`❌ Không thể parse chatId từ peer: ${JSON.stringify(event.peer)}`);
+        return;
+      }
+
+      const messageId = event.msgId;
+      const reactions = event.reactions;
+      
+      if (!reactions || !reactions.recentReactions) return;
+
+      // Lấy user ID của người react
+      const latestReaction = reactions.recentReactions[0];
+      if (!latestReaction) {
+        Utils.log(`❌ Không tìm thấy latestReaction từ reactions`);
+        return;
+      }
+
+      // Parse userId from reaction structure
+
+      let reactorUserId;
+      if (latestReaction.userId) {
+        reactorUserId = latestReaction.userId.toString();
+      } else if (latestReaction.peerId && latestReaction.peerId.userId) {
+        reactorUserId = latestReaction.peerId.userId.toString();
+      } else if (latestReaction.peer_id && latestReaction.peer_id.user_id) {
+        reactorUserId = latestReaction.peer_id.user_id.toString();
+      } else {
+        Utils.log(`❌ Không thể parse userId từ reaction:`, JSON.stringify(latestReaction));
+        return;
+      }
+      
+      // Kiểm tra quyền admin
+      if (!this.isOwnerOrAdmin(reactorUserId)) {
+        Utils.log(`🚫 User ${reactorUserId} không phải admin - bỏ qua reaction`);
+        return;
+      }
+
+      Utils.log(`👑 Admin ${reactorUserId} đã react - tiếp tục xử lý`);
+
+      const currentTime = Date.now();
+
+      // Tạo unique key để track reaction
+      const reactionKey = `reaction_${chatId}_${messageId}`;
+      
+      // Skip nếu đã xử lý reaction này rồi (trong 10 giây qua)
+      if (this.processedMessages.has(reactionKey)) {
+        const processedTime = this.processedMessages.get(reactionKey);
+        if (currentTime - processedTime < 10000) { // 10 seconds
+          return;
+        }
+      }
+
+      // Mark reaction as processed
+      this.processedMessages.set(reactionKey, currentTime);
+
+      Utils.log(`👍 Nhận reaction từ admin: ${chatId}_${messageId}`);
+      
+      // Lấy tin nhắn gốc để forward
+      const originalMessage = await this.client.getMessages(chatId, { ids: [messageId] });
+      if (!originalMessage || originalMessage.length === 0) {
+        Utils.log(`❌ Không tìm thấy tin nhắn gốc: ${messageId}`);
+        return;
+      }
+
+      const targetMessage = originalMessage[0];
+      await this.checkAutoForwardReaction(event, targetMessage, reactorUserId);
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi xử lý reaction: ${error.message}`);
     }
   }
 
@@ -324,8 +427,60 @@ class BankTransactionUserbot {
         break;
       
       case '/pic2':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
         await this.handlePic2Command(args, chatId, messageId);
         break;
+      
+      case '/setforward':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+        await this.handleSetForwardCommand(args, chatId, messageId, originalMessage);
+        break;
+      
+      case '/removeforward':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+        await this.handleRemoveForwardCommand(args, chatId, messageId);
+        break;
+      
+              case '/listforward':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+          await this.handleListForwardCommand(chatId, messageId);
+          break;
+        case '/groups':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+          await this.handleGroupsCommand(chatId, messageId);
+          break;
+        case '/ad':
+          await this.handleAdminCommand(args, chatId, messageId, originalMessage);
+          break;
+        case '/adlist':
+          if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+            await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+            return;
+          }
+          await this.handleAdminListCommand(chatId, messageId);
+          break;
+        case '/adremove':
+          if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+            await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+            return;
+          }
+          await this.handleAdminRemoveCommand(args, chatId, messageId);
+          break;
     }
   }
 
@@ -384,6 +539,14 @@ class BankTransactionUserbot {
     const pic2Count = this.settings.pic2Settings ? Object.keys(this.settings.pic2Settings).length : 0;
     const pic2Status = pic2Count > 0 ? `🟢 ${pic2Count} groups` : '🔴 TẮT';
     
+    // Đếm số forward rules
+    const forwardCount = Utils.getActiveForwardRules(this.settings).length;
+    const forwardStatus = forwardCount > 0 ? `🟢 ${forwardCount} rules` : '🔴 TẮT';
+    
+    // Đếm số admin users
+    const adminCount = Utils.getAdminList(this.settings).length;
+    const adminStatus = adminCount > 0 ? `🟢 ${adminCount} admins` : '🔴 NONE';
+    
     const statusMessage = `
 📊 **Trạng thái UserBot**
 
@@ -392,6 +555,9 @@ class BankTransactionUserbot {
 🌐 Reply giao dịch (tổng): ${groupReplyStatus}
 💬 Tin nhắn reply: "${this.settings.replyMessage}"
 📸 Pic2 auto reply: ${pic2Status}
+🔄 Auto forward: ${forwardStatus}
+👑 Admin users: ${adminStatus}
+👍 Reaction support: 🟢 BẬT (reply + admin reaction modes)
 ⏱️ Uptime: ${hours}h ${minutes}m
 
 📝 Commands:
@@ -399,8 +565,14 @@ class BankTransactionUserbot {
 /1 off - Tắt reply cho nhóm này
 /status - Xem trạng thái  
 /id - Xem ID chat/user
-/pic2 - Cấu hình pic2
+/ad - Admin management 👑
+/groups - Danh sách groups 👑
+/pic2 - Cấu hình pic2 👑
+/setforward - Thiết lập auto-forward 👑
+/listforward - Xem forward rules 👑
 /help - Hướng dẫn
+
+👑 = Admin only commands
     `.trim();
 
     await this.sendReply(chatId, messageId, statusMessage);
@@ -414,6 +586,7 @@ class BankTransactionUserbot {
 **Chức năng chính:**
 1. Tự động phát hiện tin nhắn giao dịch ngân hàng và reply bằng số "1"
 2. Tự động reply hình ảnh từ user cụ thể trong group cụ thể
+3. Chuyển tiếp tự động tin nhắn (text, ảnh, video, file, albums) với emoji/text triggers
 
 **Định dạng tin nhắn giao dịch:**
 - Tiền vào: +2,000 đ
@@ -431,10 +604,30 @@ class BankTransactionUserbot {
 /pic2 off [groupId] - Tắt auto reply cho group
 /pic2 list - Xem danh sách cấu hình
 
+**Commands - Forward (Chuyển tiếp tự động):**
+/setforward [groupA] [groupB] [trigger] - Thiết lập auto-forward
+/removeforward [groupA] [groupB] [trigger] - Xóa rule forward
+/listforward - Xem danh sách rules forward
+
+**Cách sử dụng Forward:**
+🔹 **Reply method:** Reply tin nhắn + gõ trigger
+🔹 **Reaction method:** Admin react emoji trigger vào tin nhắn (👑 chỉ admin!)
+
+**Ví dụ Forward:**
+/setforward -1001234567890 -987654321 📋
+/setforward -1001234567890 -987654321 🔄
+/setforward -1001234567890 -987654321 copy
+
+**Commands - Admin:**
+/ad @username - Thêm admin
+/adlist - Xem danh sách admin
+/adremove user_id - Xóa admin
+
 **Commands - Khác:**
 /status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại
 /id (reply) - Xem ID của user được reply
+/groups - Xem danh sách groups bot tham gia (admin only)
 /help - Hiển thị hướng dẫn này
 
 **Ví dụ Pic2:**
@@ -444,6 +637,8 @@ class BankTransactionUserbot {
 ⚠️ **Lưu ý:** 
 - Bot chỉ reply tin nhắn có đầy đủ thông tin giao dịch
 - Pic2 chỉ hoạt động khi user gửi hình ảnh (không phải sticker)
+- Auto-forward hỗ trợ albums (nhiều ảnh/video cùng lúc)
+- Emoji triggers: 📋🔄⭐🎯💫🚀📤📥💬📸
     `.trim();
 
     await this.sendReply(chatId, messageId, helpMessage);
@@ -732,6 +927,752 @@ class BankTransactionUserbot {
       await this.sendReply(chatId, messageId, `❌ Không thể lấy thông tin chat\n\n📋 Chat ID: \`${chatId.toString()}\``);
     }
   }
+
+  // ================= FORWARD COMMANDS HANDLERS =================
+
+  // Xử lý command /setforward
+  async handleSetForwardCommand(args, chatId, messageId, originalMessage) {
+    try {
+      if (args.length < 3) {
+        const helpText = `❗ **Cú pháp:**
+/setforward [ID_nhóm_A] [ID_nhóm_B] [trigger]
+
+**Ví dụ Text Trigger:**
+/setforward -1001234567890 -987654321 forward
+/setforward -1001111111111 -1002222222222 copy
+
+**Ví dụ Emoji Trigger:**
+/setforward -1001234567890 -987654321 📋
+/setforward -1001111111111 -1002222222222 🔄
+/setforward -1001111111111 -1002222222222 ⭐
+
+**Chú ý:**
+- ID nhóm phải bắt đầu bằng dấu "-"
+- Trigger có thể là text hoặc emoji 
+- Khi ai đó reply tin nhắn và nhập trigger, tin nhắn sẽ được tự động copy`;
+        
+        await this.sendReply(chatId, messageId, helpText);
+        return;
+      }
+
+      const sourceGroupId = args[0];
+      const destGroupId = args[1];
+      const trigger = args[2].toLowerCase();
+
+      // Validate Group IDs
+      if (!Utils.isValidGroupId(sourceGroupId)) {
+        await this.sendReply(chatId, messageId, '❌ ID nhóm nguồn không hợp lệ (phải bắt đầu bằng -)');
+        return;
+      }
+
+      if (!Utils.isValidGroupId(destGroupId)) {
+        await this.sendReply(chatId, messageId, '❌ ID nhóm đích không hợp lệ (phải bắt đầu bằng -)');
+        return;
+      }
+
+      if (sourceGroupId === destGroupId) {
+        await this.sendReply(chatId, messageId, '❌ Nhóm nguồn và nhóm đích không thể giống nhau');
+        return;
+      }
+
+      // Lấy thông tin người tạo
+      const sender = originalMessage?.sender;
+      const createdBy = sender?.username ? `@${sender.username}` : 
+                      sender?.firstName ? sender.firstName : 
+                      'Unknown';
+
+      // Thêm rule
+      const result = Utils.addForwardRule(this.settings, sourceGroupId, destGroupId, trigger, createdBy);
+      
+      if (result.success) {
+        Utils.saveSettings(this.settings);
+        
+        const successMsg = `✅ **Đã thiết lập chuyển tiếp tự động:**
+
+📤 **Từ nhóm:** \`${sourceGroupId}\`
+📥 **Đến nhóm:** \`${destGroupId}\`
+🔤 **Trigger:** ${Utils.hasEmoji(trigger) ? trigger : `\`${trigger}\``}
+👤 **Tạo bởi:** ${createdBy}
+
+**Cách sử dụng:**
+Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emoji ${trigger}` : `"${trigger}"`}`;
+
+        await this.sendReply(chatId, messageId, successMsg);
+        Utils.log(`🟢 Forward rule added: ${sourceGroupId} -> ${destGroupId} (trigger: ${trigger})`);
+      } else {
+        await this.sendReply(chatId, messageId, `❌ ${result.message}`);
+      }
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /setforward: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi thiết lập forward rule');
+    }
+  }
+
+  // Xử lý command /removeforward
+  async handleRemoveForwardCommand(args, chatId, messageId) {
+    try {
+      if (args.length < 3) {
+        const helpText = `❗ **Cú pháp:**
+/removeforward [ID_nhóm_A] [ID_nhóm_B] [trigger]
+
+**Ví dụ:**
+/removeforward -1001234567890 -987654321 forward`;
+        
+        await this.sendReply(chatId, messageId, helpText);
+        return;
+      }
+
+      const sourceGroupId = args[0];
+      const destGroupId = args[1];
+      const trigger = args[2].toLowerCase();
+
+      // Xóa rule
+      const result = Utils.removeForwardRule(this.settings, sourceGroupId, destGroupId, trigger);
+      
+      if (result.success) {
+        Utils.saveSettings(this.settings);
+        
+        const successMsg = `✅ **Đã xóa rule chuyển tiếp:**
+
+📤 **Từ nhóm:** \`${sourceGroupId}\`
+📥 **Đến nhóm:** \`${destGroupId}\`
+🔤 **Trigger:** ${Utils.hasEmoji(trigger) ? trigger : `\`${trigger}\``}`;
+
+        await this.sendReply(chatId, messageId, successMsg);
+        Utils.log(`🔴 Forward rule removed: ${sourceGroupId} -> ${destGroupId} (trigger: ${trigger})`);
+      } else {
+        await this.sendReply(chatId, messageId, `❌ ${result.message}`);
+      }
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /removeforward: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi xóa forward rule');
+    }
+  }
+
+  // Xử lý command /listforward
+  async handleListForwardCommand(chatId, messageId) {
+    try {
+      const activeRules = Utils.getActiveForwardRules(this.settings);
+      
+      if (activeRules.length === 0) {
+        await this.sendReply(chatId, messageId, '📝 Chưa có rule chuyển tiếp nào được thiết lập.');
+        return;
+      }
+
+      let message = '📋 **Danh sách rules chuyển tiếp tự động:**\n\n';
+      
+      activeRules.forEach((rule, index) => {
+        const createdDate = Utils.formatDate(rule.createdTime);
+        const triggerDisplay = Utils.hasEmoji(rule.trigger) ? rule.trigger : `\`${rule.trigger}\``;
+        
+        message += `**${index + 1}.** 📤 Từ: \`${rule.sourceGroupId}\`\n`;
+        message += `   📥 Đến: \`${rule.destGroupId}\`\n`;
+        message += `   🔤 Trigger: ${triggerDisplay}\n`;
+        message += `   👤 Tạo bởi: ${rule.createdBy}\n`;
+        message += `   📅 Ngày tạo: ${createdDate}\n\n`;
+      });
+
+      await this.sendReply(chatId, messageId, message.trim());
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /listforward: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi xem danh sách forward rules');
+    }
+  }
+
+  // Xử lý command /groups
+  async handleGroupsCommand(chatId, messageId) {
+    try {
+      Utils.log('🏢 Lấy danh sách groups...');
+      
+      // Lấy tất cả dialogs (chats) với limit cao hơn
+      const dialogs = await this.client.getDialogs({ limit: 500 });
+      
+      // Filter chỉ groups và supergroups
+      const groups = dialogs.filter(dialog => {
+        const entity = dialog.entity;
+        return entity.className === 'Chat' || entity.className === 'Channel';
+      });
+      
+      if (groups.length === 0) {
+        await this.sendReply(chatId, messageId, '❌ Không tìm thấy group nào');
+        return;
+      }
+
+      // Chia groups thành chunks để tránh vượt quá giới hạn 4096 ký tự
+      const chunkSize = 25; // Mỗi chunk 25 groups
+      const chunks = [];
+      
+      for (let i = 0; i < groups.length; i += chunkSize) {
+        chunks.push(groups.slice(i, i + chunkSize));
+      }
+
+      Utils.log(`📊 Tổng ${groups.length} groups, chia thành ${chunks.length} parts`);
+
+      // Gửi header message
+      const headerMsg = `🏢 **Tìm thấy ${groups.length} Groups/Channels**\n📄 Sẽ gửi ${chunks.length} tin nhắn\n\n⏳ Đang gửi...`;
+      await this.sendReply(chatId, messageId, headerMsg);
+
+      // Gửi từng chunk
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+        const chunk = chunks[chunkIndex];
+        const partNumber = chunkIndex + 1;
+        
+        let groupsList = `📋 **Part ${partNumber}/${chunks.length}** (Groups ${chunkIndex * chunkSize + 1}-${Math.min((chunkIndex + 1) * chunkSize, groups.length)}):\n\n`;
+        
+        chunk.forEach((dialog, index) => {
+          const entity = dialog.entity;
+          const groupName = entity.title || 'Không có tên';
+          const groupId = entity.id.toString();
+          
+          // Format group ID với prefix phù hợp
+          let formattedId;
+          if (entity.className === 'Channel') {
+            formattedId = `-100${groupId}`;
+          } else {
+            formattedId = `-${groupId}`;
+          }
+          
+          const globalIndex = chunkIndex * chunkSize + index + 1;
+          groupsList += `${globalIndex}. **${groupName}**\n`;
+          groupsList += `   ID: \`${formattedId}\`\n\n`;
+        });
+        
+        // Delay nhỏ giữa các tin nhắn để tránh flood
+        if (chunkIndex > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        await this.client.sendMessage(chatId, { message: groupsList.trim() });
+      }
+      
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi lấy danh sách groups: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi khi lấy danh sách groups');
+    }
+  }
+
+  // Xử lý command /ad (add admin)
+  async handleAdminCommand(args, chatId, messageId, originalMessage) {
+    try {
+      // Chỉ owner hoặc admin hiện tại mới có thể add admin
+      const senderId = originalMessage.senderId?.toString();
+      if (!this.isOwnerOrAdmin(senderId)) {
+        await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+        return;
+      }
+
+      if (args.length === 0) {
+        const helpText = `👑 **Admin Management:**
+
+/ad @username - Thêm admin bằng username
+/ad user_id - Thêm admin bằng user ID
+/adlist - Xem danh sách admin
+/adremove user_id - Xóa admin
+
+**Ví dụ:**
+/ad @john_doe
+/ad 123456789`;
+        await this.sendReply(chatId, messageId, helpText);
+        return;
+      }
+
+      let targetUserId;
+      const input = args[0];
+
+      // Xử lý username (@username)
+      if (input.startsWith('@')) {
+        const username = input.substring(1);
+        try {
+          const user = await this.client.getEntity(username);
+          targetUserId = user.id.toString();
+        } catch (error) {
+          await this.sendReply(chatId, messageId, `❌ Không tìm thấy user: ${input}`);
+          return;
+        }
+      } 
+      // Xử lý user ID
+      else if (/^\d+$/.test(input)) {
+        targetUserId = input;
+      } else {
+        await this.sendReply(chatId, messageId, '❌ Format không hợp lệ. Sử dụng @username hoặc user_id');
+        return;
+      }
+
+      const result = Utils.addAdmin(this.settings, targetUserId);
+      
+      if (result.success) {
+        Utils.saveSettings(this.settings);
+        await this.sendReply(chatId, messageId, `✅ ${result.message}\n👤 User ID: \`${targetUserId}\``);
+        Utils.log(`👑 Added admin: ${targetUserId} by ${senderId}`);
+      } else {
+        await this.sendReply(chatId, messageId, `❌ ${result.message}`);
+      }
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /ad: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi thêm admin');
+    }
+  }
+
+  // Xử lý command /adlist
+  async handleAdminListCommand(chatId, messageId) {
+    try {
+      const adminList = Utils.getAdminList(this.settings);
+      
+      if (adminList.length === 0) {
+        await this.sendReply(chatId, messageId, '📝 Chưa có admin nào được thiết lập');
+        return;
+      }
+
+      let message = `👑 **Danh sách Admin (${adminList.length}):**\n\n`;
+      
+      // Fetch user info for each admin
+      for (let i = 0; i < adminList.length; i++) {
+        const userId = adminList[i];
+        try {
+          const user = await this.client.getEntity(parseInt(userId));
+          const firstName = user.firstName || '';
+          const lastName = user.lastName || '';
+          const username = user.username || '';
+          
+          let displayName = `${firstName} ${lastName}`.trim();
+          if (!displayName) displayName = 'Unknown User';
+          
+          message += `${i + 1}. **${displayName}**\n`;
+          if (username) {
+            message += `   @${username}\n`;
+          }
+          message += `   ID: \`${userId}\`\n\n`;
+          
+        } catch (userError) {
+          // Fallback if can't fetch user info
+          message += `${i + 1}. **Unknown User**\n`;
+          message += `   ID: \`${userId}\` (info not available)\n\n`;
+          Utils.log(`⚠️ Không thể lấy thông tin user ${userId}: ${userError.message}`);
+        }
+      }
+
+      await this.sendReply(chatId, messageId, message.trim());
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /adlist: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi xem danh sách admin');
+    }
+  }
+
+  // Xử lý command /adremove
+  async handleAdminRemoveCommand(args, chatId, messageId) {
+    try {
+      if (args.length === 0) {
+        await this.sendReply(chatId, messageId, '❌ Vui lòng nhập user ID để xóa\n\n**Ví dụ:** /adremove 123456789');
+        return;
+      }
+
+      const targetUserId = args[0];
+      
+      if (!/^\d+$/.test(targetUserId)) {
+        await this.sendReply(chatId, messageId, '❌ User ID phải là số');
+        return;
+      }
+
+      const result = Utils.removeAdmin(this.settings, targetUserId);
+      
+      if (result.success) {
+        Utils.saveSettings(this.settings);
+        await this.sendReply(chatId, messageId, `✅ ${result.message}\n👤 User ID: \`${targetUserId}\``);
+        Utils.log(`👑 Removed admin: ${targetUserId}`);
+      } else {
+        await this.sendReply(chatId, messageId, `❌ ${result.message}`);
+      }
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý /adremove: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi xóa admin');
+    }
+  }
+
+  // Check if user is owner or admin
+  isOwnerOrAdmin(userId) {
+    if (!userId) return false;
+    
+    // Check admin list
+    if (Utils.isAdmin(this.settings, userId)) {
+      return true;
+    }
+    
+    // First-time setup: if no admins exist, anyone can become admin
+    const adminList = Utils.getAdminList(this.settings);
+    if (adminList.length === 0) {
+      Utils.log(`🏃‍♂️ First-time setup: Auto-adding first admin: ${userId}`);
+      Utils.addAdmin(this.settings, userId);
+      Utils.saveSettings(this.settings);
+      return true;
+    }
+    
+    return false;
+  }
+
+  // Kiểm tra và xử lý auto-forward message
+  async checkAutoForwardMessage(message) {
+    try {
+      const messageText = message.message || message.text || '';
+      if (!messageText.trim()) return;
+
+      const chatId = message.chatId.toString();
+      const trigger = Utils.normalizeTrigger(messageText);
+
+      // Tìm forward rule phù hợp
+      const rule = Utils.findForwardRule(this.settings, chatId, trigger);
+      if (!rule) return;
+
+      // Lấy tin nhắn được reply
+      const replyToMsgId = message.replyTo.replyToMsgId;
+      const messages = await this.client.getMessages(chatId, {
+        ids: [replyToMsgId]
+      });
+
+      if (!messages || messages.length === 0) {
+        Utils.log(`❌ Không tìm thấy tin nhắn được reply`);
+        return;
+      }
+
+      const originalMessage = messages[0];
+      
+      // Kiểm tra xem có thể copy tin nhắn không
+      if (!Utils.canCopyMessage(originalMessage)) {
+        await this.sendReply(message.chatId, message.id, 
+          `❌ Loại tin nhắn này không được hỗ trợ để copy`);
+        return;
+      }
+
+      // Tạo unique key để tránh duplicate auto-forward
+      const autoForwardKey = `autoforward_${chatId}_${replyToMsgId}_${trigger}`;
+      if (this.processedMessages.has(autoForwardKey)) {
+        return;
+      }
+
+      // Mark as processed
+      this.processedMessages.set(autoForwardKey, Date.now());
+
+      // Copy tin nhắn
+      const result = await this.copyMessage(originalMessage, rule.destGroupId);
+      
+      if (result.success) {
+        const messageType = Utils.getMessageType(originalMessage);
+        const originalSender = originalMessage.sender?.username ? 
+          `@${originalMessage.sender.username}` : 
+          originalMessage.sender?.firstName || 'Unknown';
+        
+        Utils.log(`🤖 Auto-forward: ${messageType} từ ${originalSender} (${chatId} -> ${rule.destGroupId}, trigger: ${trigger})`);
+        
+        // Thông báo thành công với thông tin album nếu có
+        let successMessage = ``;
+        
+        if (result.albumSize) {
+          successMessage += `\n📸 Album: ${result.albumSize} items`;
+          if (result.method === 'forward') {
+            successMessage += ` (forwarded album)`;
+          } else if (result.method === 'sendFile') {
+            successMessage += ` (sendFile method)`;
+          } else if (result.fallback) {
+            successMessage += ` (individual files)`;
+          } else {
+            successMessage += ` (true album)`;
+          }
+        }
+        
+        await this.sendReply(message.chatId, message.id, successMessage);
+      } else {
+        await this.sendReply(message.chatId, message.id, 
+          `❌ Không thể tự động chuyển tiếp: ${result.error}`);
+      }
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi khi xử lý auto-forward: ${error.message}`);
+    }
+  }
+
+  // Kiểm tra và xử lý auto-forward reaction (chỉ admin)
+  async checkAutoForwardReaction(reactionEvent, originalMessage, reactorUserId) {
+    try {
+      const chatId = originalMessage.chatId.toString();
+
+      // Lấy reactions từ event
+      const reactions = reactionEvent.reactions;
+      if (!reactions || !reactions.recentReactions || reactions.recentReactions.length === 0) return;
+
+      // Lọc reactions mới nhất (chỉ lấy reaction đầu tiên)
+      const latestReaction = reactions.recentReactions[0];
+      if (!latestReaction || !latestReaction.reaction) return;
+
+      let reactionEmoji = '';
+      if (latestReaction.reaction._ === 'ReactionEmoji') {
+        reactionEmoji = latestReaction.reaction.emoticon;
+      } else if (latestReaction.reaction.className === 'ReactionEmoji') {
+        reactionEmoji = latestReaction.reaction.emoticon;  
+      } else {
+        // Skip custom emoji reactions for now
+        Utils.log(`⚠️ Admin ${reactorUserId} used custom emoji - skipping`);
+        return;
+      }
+
+      Utils.log(`🎯 Admin ${reactorUserId} reaction emoji: ${reactionEmoji} in chat ${chatId}`);
+
+      // Tìm forward rule matching với reaction emoji
+      const rule = Utils.findForwardRule(this.settings, chatId, reactionEmoji);
+      if (!rule) {
+        Utils.log(`❌ Không tìm thấy forward rule cho emoji: ${reactionEmoji} trong chat ${chatId}`);
+        return;
+      }
+
+      Utils.log(`✅ Tìm thấy forward rule: ${chatId} -> ${rule.destGroupId} với trigger: ${reactionEmoji} (triggered by admin ${reactorUserId})`);
+
+      // Kiểm tra xem tin nhắn có thể copy không
+      if (!Utils.canCopyMessage(originalMessage)) {
+        Utils.log(`❌ Tin nhắn không thể copy: ${Utils.getMessageType(originalMessage)}`);
+        return;
+      }
+
+      // Thực hiện copy message
+      Utils.log(`🚀 Admin ${reactorUserId} auto-forward: ${reactionEmoji} từ ${rule.sourceGroupId} đến ${rule.destGroupId}`);
+      
+      const result = await this.copyMessage(originalMessage, rule.destGroupId);
+      if (result.success) {
+        let successMessage = `🤖 Admin ${reactorUserId} đã chuyển tiếp qua reaction ${reactionEmoji} đến nhóm \`${rule.destGroupId}\``;
+        
+        if (result.albumSize) {
+          successMessage += `\n📸 Album: ${result.albumSize} items`;
+          if (result.method === 'forward') {
+            successMessage += ` (forwarded album)`;
+          } else if (result.method === 'sendFile') {
+            successMessage += ` (sendFile method)`;
+          } else if (result.fallback) {
+            successMessage += ` (individual files)`;
+          } else {
+            successMessage += ` (true album)`;
+          }
+        }
+
+        Utils.log(`✅ ${successMessage}`);
+        // Note: Không reply lại trong reaction để tránh spam
+      } else {
+        Utils.log(`❌ Admin ${reactorUserId} auto-forward reaction thất bại: ${result.error}`);
+      }
+
+    } catch (error) {
+      Utils.log(`❌ Lỗi auto-forward reaction: ${error.message}`);
+    }
+  }
+
+  // Lấy tất cả messages trong media group (album)
+  async getMediaGroupMessages(chatId, groupedId, aroundMessageId) {
+    try {
+      // Check if groupedId is valid
+      if (!groupedId) {
+        Utils.log(`❌ Invalid groupedId: ${groupedId}`);
+        return [];
+      }
+
+      // Lấy một range messages xung quanh message hiện tại để tìm tất cả messages cùng groupedId
+      const messages = await this.client.getMessages(chatId, {
+        limit: 20, // Lấy 20 messages xung quanh
+        offsetId: aroundMessageId,
+        addOffset: -10 // Lấy 10 tin nhắn trước và sau
+      });
+
+      // Filter những messages có cùng groupedId  
+      const groupMessages = messages.filter(msg => 
+        msg.groupedId && groupedId && msg.groupedId.toString() === groupedId.toString()
+      );
+
+      // Sắp xếp theo thứ tự id tăng dần (chronological order)
+      groupMessages.sort((a, b) => a.id - b.id);
+
+      Utils.log(`📸 Found ${groupMessages.length} messages in media group ${groupedId}`);
+      return groupMessages;
+
+    } catch (error) {
+      Utils.log(`❌ Error getting media group messages: ${error.message}`);
+      return []; // Return empty array on error
+    }
+  }
+
+  // Copy tin nhạn đa dạng
+  async copyMessage(originalMessage, destChatId) {
+    try {
+      const messageText = originalMessage.message || originalMessage.text || '';
+      
+      // ========== HANDLE MEDIA GROUPS (ALBUMS) ==========
+      if (Utils.isMediaGroup(originalMessage)) {
+        Utils.log(`📸 Detecting media group (album), getting all messages...`);
+        
+        // Lấy tất cả messages trong media group
+        const groupMessages = await this.getMediaGroupMessages(
+          originalMessage.chatId, 
+          originalMessage.groupedId, 
+          originalMessage.id
+        );
+        
+        if (groupMessages.length > 1) {
+          Utils.log(`📋 Copying album with ${groupMessages.length} items`);
+          
+          // Tạo array media files để send as album
+          const mediaFiles = [];
+          let albumCaption = '';
+          
+          for (const msg of groupMessages) {
+            const msgText = msg.message || msg.text || '';
+            if (msgText && !albumCaption) {
+              albumCaption = msgText; // Lấy caption từ tin nhắn đầu tiên có text
+            }
+            
+            // Collect media files
+            if (msg.media) {
+              if (msg.media.className === 'MessageMediaPhoto') {
+                mediaFiles.push({
+                  file: msg.media.photo,
+                  type: 'photo'
+                });
+              } else if (msg.media.className === 'MessageMediaDocument') {
+                mediaFiles.push({
+                  file: msg.media.document,
+                  type: 'document'
+                });
+              }
+            }
+          }
+          
+          if (mediaFiles.length > 0) {
+            try {
+              // Method 1: Send as true album using array of files
+              const albumFiles = mediaFiles.map(media => media.file);
+              
+              await this.client.sendMessage(destChatId, {
+                file: albumFiles, // Send array of files - creates true album
+                message: albumCaption || '' // Album caption
+              });
+              
+              Utils.log(`✅ Successfully sent album with ${mediaFiles.length} items as true album`);
+              return { success: true, albumSize: mediaFiles.length };
+              
+            } catch (albumError) {
+              Utils.log(`❌ True album send failed, trying forwardMessages method: ${albumError.message}`);
+              
+              try {
+                // Method 2: Forward entire album as a group (preserves album structure)
+                const messageIds = groupMessages.map(msg => msg.id);
+                
+                await this.client.forwardMessages(destChatId, {
+                  messages: messageIds,
+                  fromPeer: originalMessage.chatId
+                });
+                
+                Utils.log(`✅ Successfully forwarded album with ${messageIds.length} items as true album`);
+                return { success: true, albumSize: messageIds.length, method: 'forward' };
+                
+              } catch (forwardError) {
+                Utils.log(`❌ forwardMessages failed, trying sendFile method: ${forwardError.message}`);
+                
+                try {
+                  // Method 3: Use sendFile with multiple files
+                  await this.client.sendFile(destChatId, albumFiles, {
+                    caption: albumCaption || '',
+                    forceDocument: false
+                  });
+                  
+                  Utils.log(`✅ Successfully sent album using sendFile method`);
+                  return { success: true, albumSize: mediaFiles.length, method: 'sendFile' };
+                  
+                } catch (sendFileError) {
+                  Utils.log(`❌ sendFile failed, falling back to individual messages: ${sendFileError.message}`);
+                  
+                  // Method 4: Fallback to individual files with same timestamp to group them
+                const timestamp = Date.now();
+                
+                for (let i = 0; i < mediaFiles.length; i++) {
+                  const media = mediaFiles[i];
+                  const isFirst = i === 0;
+                  
+                  await this.client.sendMessage(destChatId, {
+                    file: media.file,
+                    message: isFirst ? albumCaption : '', // Only caption on first item
+                    scheduleDate: timestamp // Try to group by same timestamp
+                  });
+                  
+                  // Minimal delay to maintain order
+                  if (i < mediaFiles.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                  }
+                }
+                
+                Utils.log(`✅ Album sent as individual files with grouping attempt`);
+                return { success: true, albumSize: mediaFiles.length, fallback: true };
+                }
+              }
+            }
+          }
+        }
+        
+        // Nếu chỉ có 1 message trong group hoặc không có media, xử lý như single message
+        Utils.log(`📷 Single item in media group, processing as normal message`);
+      }
+      
+      // ========== HANDLE SINGLE MESSAGES ==========
+      
+      // Copy tin nhắn văn bản
+      if (messageText && !originalMessage.media) {
+        await this.client.sendMessage(destChatId, { message: messageText });
+        return { success: true };
+      }
+      
+      // Copy tin nhắn có media
+      if (originalMessage.media) {
+        const mediaType = originalMessage.media.className;
+        
+        switch (mediaType) {
+          case 'MessageMediaPhoto':
+            await this.client.sendMessage(destChatId, {
+              file: originalMessage.media.photo,
+              message: messageText || ''
+            });
+            break;
+            
+          case 'MessageMediaDocument':
+            await this.client.sendMessage(destChatId, {
+              file: originalMessage.media.document,
+              message: messageText || ''
+            });
+            break;
+            
+          default:
+            // Fallback: Forward tin nhắn nếu không copy được
+            await this.client.forwardMessages(destChatId, {
+              messages: [originalMessage.id],
+              fromPeer: originalMessage.chatId
+            });
+        }
+        
+        return { success: true };
+      }
+      
+      // Nếu không thể copy, thử forward
+      await this.client.forwardMessages(destChatId, {
+        messages: [originalMessage.id],
+        fromPeer: originalMessage.chatId
+      });
+      
+      return { success: true };
+      
+    } catch (error) {
+      Utils.log(`❌ Copy message error: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // ================= PIC2 FUNCTIONS =================
 
   // Kiểm tra và xử lý pic2 message
   async checkPic2Message(message) {

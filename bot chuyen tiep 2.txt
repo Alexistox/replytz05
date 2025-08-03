@@ -1,0 +1,1059 @@
+
+
+/**
+ * Quản lý thuộc tính script
+ */
+function getScriptProps() {
+  return PropertiesService.getScriptProperties();
+}
+
+/**
+ * Lấy ID của chủ sở hữu bot
+ */
+function getOwnerId() {
+  return getScriptProps().getProperty("BOT_OWNER_ID");
+}
+
+/**
+ * Thiết lập ID chủ sở hữu bot
+ */
+function setOwnerId(newId) {
+  getScriptProps().setProperty("BOT_OWNER_ID", newId);
+}
+
+/**
+ * Lấy danh sách username được phép sử dụng bot
+ */
+function getAllowedUsernames() {
+  var raw = getScriptProps().getProperty("ALLOWED_USERNAMES") || "";
+  if (!raw) return [];
+  return raw.split(",").map(function(u) { return u.trim(); }).filter(String);
+}
+
+/**
+ * Lưu danh sách username
+ */
+function setAllowedUsernames(arr) {
+  var csv = arr.join(",");
+  getScriptProps().setProperty("ALLOWED_USERNAMES", csv);
+}
+
+/**
+ * Thêm username vào danh sách được phép
+ */
+/**
+ * Thêm username vào danh sách được phép và cập nhật sheet UserTracking
+ * @param {string} uname - Username cần thêm
+ * @param {string} addedBy - ID hoặc username của người thêm (nếu có)
+ */
+function addAllowedUsername(uname, addedBy = "System") {
+  uname = uname.toLowerCase();
+  var arr = getAllowedUsernames();
+  
+  if (arr.indexOf(uname) === -1) {
+    // Thêm vào mảng trong properties
+    arr.push(uname);
+    setAllowedUsernames(arr);
+    
+    // Thêm vào sheet theo dõi người dùng
+    const userSheet = setupUserTrackingSheet();
+    
+    // Kiểm tra xem user đã tồn tại trong sheet chưa
+    const data = userSheet.getDataRange().getValues();
+    let rowIndex = -1;
+    
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0].toLowerCase() === uname) {
+        rowIndex = i + 1; // +1 vì index bắt đầu từ 1 trong Sheets
+        break;
+      }
+    }
+    
+    if (rowIndex > 0) {
+      // Cập nhật thông tin user
+      userSheet.getRange(rowIndex, 2).setValue(addedBy);
+      userSheet.getRange(rowIndex, 3).setValue(new Date());
+      userSheet.getRange(rowIndex, 4).setValue("Active");
+    } else {
+      // Thêm user mới
+      userSheet.appendRow([
+        uname,
+        addedBy,
+        new Date(),
+        "Active"
+      ]);
+    }
+    
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Kiểm tra username có trong danh sách cho phép không
+ */
+function isUsernameAllowed(uname) {
+  uname = (uname || "").toLowerCase();
+  var arr = getAllowedUsernames();
+  return (arr.indexOf(uname) !== -1);
+}
+
+/**
+ * Xóa username khỏi danh sách cho phép
+ */
+/**
+ * Xóa username khỏi danh sách cho phép và cập nhật sheet UserTracking
+ */
+function removeAllowedUsername(uname, removedBy = "System") {
+  uname = (uname || "").toLowerCase();
+  var arr = getAllowedUsernames();
+  var index = arr.indexOf(uname);
+  
+  if (index !== -1) {
+    // Xóa khỏi mảng trong properties
+    arr.splice(index, 1);
+    setAllowedUsernames(arr);
+    
+    // Cập nhật trạng thái trong sheet theo dõi người dùng
+    const userSheet = setupUserTrackingSheet();
+    const data = userSheet.getDataRange().getValues();
+    let rowIndex = -1;
+    
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0].toLowerCase() === uname) {
+        rowIndex = i + 1;
+        break;
+      }
+    }
+    
+    if (rowIndex > 0) {
+      // Đánh dấu user là không hoạt động
+      userSheet.getRange(rowIndex, 4).setValue("Removed");
+    }
+    
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Kiểm tra người dùng có quyền sử dụng bot không
+ */
+function hasPermission(userId, username) {
+  return userId.toString() === getOwnerId() || isUsernameAllowed(username);
+}
+
+/**
+ * Hàm cài đặt webhook cho bot
+ */
+function setupWebhook() {
+  const response = UrlFetchApp.fetch(`${API}/setWebhook?url=${WEBHOOK_URL}`);
+  Logger.log(response.getContentText());
+  return response.getContentText();
+}
+
+/**
+ * Kiểm tra trạng thái webhook hiện tại
+ */
+function getWebhookInfo() {
+  const response = UrlFetchApp.fetch(`${API}/getWebhookInfo`);
+  Logger.log(response.getContentText());
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * Xử lý request từ Telegram
+ */
+function doPost(e) {
+  const update = JSON.parse(e.postData.contents);
+  const msg = update.message;
+  if (!msg) return;
+  
+  const chatId = msg.chat.id.toString();
+  const userId = msg.from.id;
+  const usernameRaw = msg.from.username || "";
+  
+  ensureSheet(chatId); // tạo Sheet nếu chưa có
+  // Tự động cập nhật sheet theo dõi nhóm nếu là group chat
+if (msg.chat.type === "group" || msg.chat.type === "supergroup") {
+  updateGroupTrackingInfo(chatId);
+}
+  // Nếu chưa có owner, hãy thiết lập
+  const ownerId = getOwnerId();
+  if (!ownerId) {
+    setOwnerId(userId.toString());
+    sendMessage(chatId, `Bạn (ID:${userId}) đã trở thành chủ sở hữu Bot.`);
+  }
+  
+  try {
+    // Xử lý lệnh quản lý quyền truy cập
+    if (msg.text) {
+      const message = msg.text;
+      
+      // --- Xử lý lệnh set users
+if (message.startsWith('/set ')) {
+  if (userId.toString() !== getOwnerId()) {
+    sendMessage(chatId, "❌ Bạn không phải owner, không thể set.");
+    return;
+  }
+  
+  const parts = message.trim().split(' ');
+  if (parts.length < 2) {
+    sendMessage(chatId, "❌ Cú pháp: /set @username1 @username2...");
+    return;
+  }
+  
+  const added = [];
+  const addedBy = msg.from.username || msg.from.first_name || userId.toString();
+  
+  for (let i = 1; i < parts.length; i++) {
+    const newUser = parts[i].replace('@', ''); // Loại bỏ @ nếu có
+    if (newUser) {
+      if (addAllowedUsername(newUser, addedBy)) {
+        added.push('@' + newUser);
+      }
+    }
+  }
+  
+  if (added.length > 0) {
+    sendMessage(chatId, `✅ Đã cho phép ${added.join(', ')} được sử dụng bot.`);
+  } else {
+    sendMessage(chatId, "❌ Không có username hợp lệ để thêm.");
+  }
+  return;
+}
+      // --- Xử lý lệnh unset users
+if (message.startsWith('/unset ')) {
+  if (userId.toString() !== getOwnerId()) {
+    sendMessage(chatId, "❌ Bạn không phải owner, không thể unset.");
+    return;
+  }
+  
+  const parts = message.trim().split(' ');
+  if (parts.length < 2) {
+    sendMessage(chatId, "❌ Cú pháp: /unset @username1 @username2...");
+    return;
+  }
+  
+  const removed = [];
+  const removedBy = msg.from.username || msg.from.first_name || userId.toString();
+  
+  for (let i = 1; i < parts.length; i++) {
+    const user = parts[i].replace('@', ''); // Loại bỏ @ nếu có
+    if (user && removeAllowedUsername(user, removedBy)) {
+      removed.push('@' + user);
+    }
+  }
+  
+  if (removed.length > 0) {
+    sendMessage(chatId, `✅ Đã xóa ${removed.join(', ')} khỏi danh sách người dùng được phép.`);
+  } else {
+    sendMessage(chatId, "❌ Không tìm thấy username nào trong danh sách để xóa.");
+  }
+  return;
+}
+      
+      // --- Xử lý lệnh xem danh sách người dùng
+if (message.startsWith('/users')) {
+  if (!hasPermission(userId, usernameRaw)) {
+    sendMessage(chatId, "❌ Bạn không có quyền xem danh sách người dùng.");
+    return;
+  }
+  
+  const ownerInfo = `👑 Owner: ID ${getOwnerId()}`;
+  
+  // Lấy dữ liệu từ sheet UserTracking
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const userSheet = ss.getSheetByName("UserTracking");
+  
+  if (!userSheet) {
+    // Nếu chưa có sheet, hiển thị theo cách cũ
+    const users = getAllowedUsernames();
+    if (users.length > 0) {
+      const usersList = users.map(u => '@' + u).join(', ');
+      sendMessage(chatId, `${ownerInfo}\n👥 Danh sách người dùng được phép: ${usersList}`);
+    } else {
+      sendMessage(chatId, `${ownerInfo}\n👥 Không có người dùng nào được thêm vào danh sách.`);
+    }
+    return;
+  }
+  
+  // Lấy dữ liệu từ sheet
+  const data = userSheet.getDataRange().getValues();
+  let activeUsers = [];
+  
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] && data[i][3] === "Active") {
+      activeUsers.push({
+        username: data[i][0],
+        addedBy: data[i][1],
+        addedTime: data[i][2]
+      });
+    }
+  }
+  
+  if (activeUsers.length > 0) {
+    let message = `${ownerInfo}\n👥 *Danh sách người dùng được phép:*\n\n`;
+    
+    activeUsers.forEach(user => {
+      const addedDate = user.addedTime instanceof Date ? 
+        Utilities.formatDate(user.addedTime, Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm") : 
+        "Unknown date";
+      
+      message += `- @${user.username} (thêm bởi: ${user.addedBy}, ngày: ${addedDate})\n`;
+    });
+    
+    sendMessage(chatId, message);
+  } else {
+    sendMessage(chatId, `${ownerInfo}\n👥 Không có người dùng nào được thêm vào danh sách.`);
+  }
+  return;
+}
+      // --- 1) Xử lý /setgroup <code>
+      if (message.startsWith('/setgroup')) {
+        // Kiểm tra quyền truy cập trước khi thực hiện lệnh
+        if (!hasPermission(userId, usernameRaw)) {
+          sendMessage(chatId, "❌Không có quyền sử dụng lệnh này!/权限不足，无法执行此命令!");
+          return;
+        }
+        
+        const code = (message.split(/\s+/)[1] || '').toLowerCase();
+        if (!code) {
+          sendMessage(chatId, "❌ Vui lòng nhập mã nhóm. Ví dụ: `/setgroup a`");
+          return;
+        }
+        setGroupCode(code, chatId);
+        sendMessage(chatId, `✅ Nhóm này đã gán mã/该群已分配编码 ${code}`);
+        return;
+      }
+      
+      // --- 2) Xử lý /help
+      if (message.startsWith('/help')) {
+        let helpText = `*Hướng dẫn sử dụng bot:*
+- Để gán mã cho nhóm: \`/setgroup <mã>\` (Ví dụ: \`/setgroup a\`)
+- Để copy tin nhắn: Reply tin nhắn cần chuyển và chỉ nhập mã của nhóm đích
+- Để xem danh sách mã nhóm: \`/listgroups\`
+- Bot hỗ trợ copy: văn bản, ảnh, video, file, sticker, voice, âm thanh`;
+        
+        // Nếu là owner hoặc người dùng được phép, hiển thị thêm các lệnh quản lý
+        if (hasPermission(userId, usernameRaw)) {
+          helpText += `\n\n*Lệnh quản lý người dùng:*
+- Xem danh sách người dùng: \`/users\``;
+          
+          // Chỉ hiển thị cho owner
+          if (userId.toString() === getOwnerId()) {
+            helpText += `
+- Thêm người dùng: \`/set @username1 @username2...\`
+- Xóa người dùng: \`/unset @username1 @username2...\``;
+          }
+        }
+        
+        sendMessage(chatId, helpText);
+        return;
+      }
+      
+      // --- 3) Xử lý /listgroups
+if (message.startsWith('/listgroups')) {
+  // Kiểm tra quyền truy cập
+  if (!hasPermission(userId, usernameRaw)) {
+    sendMessage(chatId, "❌ Bạn không có quyền sử dụng lệnh này!");
+    return;
+  }
+  
+  // Lấy danh sách nhóm từ sheet theo dõi
+  const groups = getGroupsFromTrackingSheet();
+  
+  if (groups.length === 0) {
+    sendMessage(chatId, "❌ Chưa có nhóm nào được theo dõi.");
+    return;
+  }
+  
+  // Lọc các nhóm có mã code
+  const groupsWithCode = groups.filter(g => g.code);
+  const allGroups = groups;
+  
+  let message = "*Danh sách nhóm được theo dõi:*\n\n";
+  
+  if (groupsWithCode.length > 0) {
+    message += "*Nhóm có mã code:*\n";
+    groupsWithCode.forEach(g => {
+      message += `- Mã \`${g.code}\`: ${g.name} (ID: ${g.id})\n`;
+    });
+    message += "\n";
+  }
+  
+  // Hiển thị các nhóm chưa có code
+  const groupsWithoutCode = allGroups.filter(g => !g.code);
+  if (groupsWithoutCode.length > 0) {
+    message += "*Nhóm chưa có mã code:*\n";
+    groupsWithoutCode.forEach(g => {
+      message += `- ${g.name} (ID: ${g.id})\n`;
+    });
+  }
+  
+  sendMessage(chatId, message);
+  return;
+}
+      // --- 4) Xử lý /spreadsheet - xem link spreadsheet
+      if (message.startsWith('/spreadsheet')) {
+        // Kiểm tra quyền truy cập
+        if (!hasPermission(userId, usernameRaw)) {
+          return;
+        }
+        
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        const spreadsheetUrl = ss.getUrl();
+        sendMessage(chatId, `📊 Link Google Spreadsheet để xem log: ${spreadsheetUrl}`);
+        return;
+      }
+      
+      // --- 5) Xử lý reply "[code] [nội dung bổ sung]"
+      if (msg.reply_to_message && message) {
+        // Kiểm tra quyền truy cập
+        if (!hasPermission(userId, usernameRaw)) {
+          return;
+        }
+        
+        // Tách mã code và nội dung bổ sung (nếu có)
+        let parts = message.trim().split(/\s+/);
+        const code = parts[0].toLowerCase(); // Mã code luôn là phần đầu tiên
+        
+        // Nếu có nội dung bổ sung, nối tất cả các phần còn lại
+        let additionalContent = "";
+        if (parts.length > 1) {
+          additionalContent = parts.slice(1).join(" ");
+        }
+        
+        const destId = getGroupByCode(code);
+        
+        if (!destId) {
+          sendMessage(chatId, `❌ Không tìm thấy nhóm với mã "${code}"`);
+          return;
+        }
+        
+        // Xác định loại nội dung của tin nhắn gốc
+        const replyMsg = msg.reply_to_message;
+        const contentType = getMessageType(replyMsg);
+        
+        // Copy tin nhắn thay vì chuyển tiếp
+        const result = copyMessage(replyMsg, destId);
+        
+        if (result.success) {
+          // Nếu có nội dung bổ sung, gửi thêm một tin nhắn nữa
+          if (additionalContent) {
+            sendMessage(destId, additionalContent);
+          }
+          
+          // Lưu thông tin người gửi gốc trong spreadsheet
+          const originalSender = replyMsg.from.username || replyMsg.from.first_name || "Unknown";
+          
+          // Ghi log với thông tin về loại nội dung
+          logToSheets(msg, destId, code, contentType, originalSender);
+          
+          // Thông báo thành công, kèm theo trạng thái nội dung bổ sung nếu có
+          let successMsg = `✅Đã copy đến nhóm/已将转发到 ${code}`;
+          if (additionalContent) {
+            successMsg += ` (kèm nội dung bổ sung)`;
+          }
+          sendMessage(chatId, successMsg);
+        } else {
+          sendMessage(chatId, `❌ Không thể copy/无法转发到: ${result.error}`);
+        }
+        return;
+      }
+    }
+  } catch (error) {
+    Logger.log(`Error: ${error}`);
+    sendMessage(chatId, "❌ Có lỗi xảy ra: " + error.toString());
+  }
+}
+
+/**
+ * Copy tin nhắn thay vì chuyển tiếp
+ */
+function copyMessage(origMsg, destId) {
+  try {
+    // Xử lý tin nhắn văn bản
+    if (origMsg.text) {
+      sendMessage(destId, origMsg.text);
+      return { success: true };
+    }
+    
+    // Xử lý ảnh
+    else if (origMsg.photo) {
+      const photo = origMsg.photo[origMsg.photo.length - 1]; // Lấy ảnh chất lượng cao nhất
+      const caption = origMsg.caption || '';
+      
+      call(`${API}/sendPhoto`, {
+        chat_id: destId,
+        photo: photo.file_id,
+        caption: caption
+      });
+      return { success: true };
+    }
+    
+    // Xử lý video
+    else if (origMsg.video) {
+      const caption = origMsg.caption || '';
+      
+      call(`${API}/sendVideo`, {
+        chat_id: destId,
+        video: origMsg.video.file_id,
+        caption: caption
+      });
+      return { success: true };
+    }
+    
+    // Xử lý file (document)
+    else if (origMsg.document) {
+      const caption = origMsg.caption || '';
+      
+      call(`${API}/sendDocument`, {
+        chat_id: destId,
+        document: origMsg.document.file_id,
+        caption: caption
+      });
+      return { success: true };
+    }
+    
+    // Xử lý sticker
+    else if (origMsg.sticker) {
+      call(`${API}/sendSticker`, {
+        chat_id: destId,
+        sticker: origMsg.sticker.file_id
+      });
+      return { success: true };
+    }
+    
+    // Xử lý audio
+    else if (origMsg.audio) {
+      const caption = origMsg.caption || '';
+      
+      call(`${API}/sendAudio`, {
+        chat_id: destId,
+        audio: origMsg.audio.file_id,
+        caption: caption
+      });
+      return { success: true };
+    }
+    
+    // Xử lý voice message
+    else if (origMsg.voice) {
+      const caption = origMsg.caption || '';
+      
+      call(`${API}/sendVoice`, {
+        chat_id: destId,
+        voice: origMsg.voice.file_id,
+        caption: caption
+      });
+      return { success: true };
+    }
+    
+    // Xử lý animation (GIF)
+    else if (origMsg.animation) {
+      const caption = origMsg.caption || '';
+      
+      call(`${API}/sendAnimation`, {
+        chat_id: destId,
+        animation: origMsg.animation.file_id,
+        caption: caption
+      });
+      return { success: true };
+    }
+    
+    // Trường hợp không hỗ trợ
+    else {
+      return { 
+        success: false, 
+        error: "Loại tin nhắn không được hỗ trợ để copy, hãy thử chuyển tiếp" 
+      };
+    }
+  } catch (error) {
+    Logger.log(`Copy error: ${error}`);
+    return { success: false, error: error.toString() };
+  }
+}
+/**
+ * Tạo hoặc cập nhật sheet theo dõi người dùng
+ */
+function setupUserTrackingSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Tìm hoặc tạo sheet UserTracking
+  let userSheet = ss.getSheetByName("UserTracking");
+  if (!userSheet) {
+    userSheet = ss.insertSheet("UserTracking");
+    
+    // Thiết lập nội dung cơ bản
+    userSheet.appendRow(["Username", "Added By", "Added Time", "Status"]);
+    
+    // Định dạng sheet
+    userSheet.getRange(1, 1, 1, 4).setFontWeight("bold");
+    userSheet.setColumnWidth(1, 150); // Username
+    userSheet.setColumnWidth(2, 150); // Added By
+    userSheet.setColumnWidth(3, 180); // Thời gian
+    userSheet.setColumnWidth(4, 100); // Trạng thái
+    userSheet.setFrozenRows(1);
+  }
+  
+  return userSheet;
+}
+/**
+ * Cập nhật Config sheet và đảm bảo tồn tại
+ */
+function setupConfigSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Tìm hoặc tạo sheet Config
+  let configSheet = ss.getSheetByName("Config");
+  if (!configSheet) {
+    configSheet = ss.insertSheet("Config");
+    
+    // Thiết lập nội dung cơ bản
+    configSheet.appendRow(["Bot Info", "Value"]);
+    configSheet.appendRow(["Bot Token", "Protected"]);
+    configSheet.appendRow(["Last Update", new Date()]);
+    configSheet.appendRow(["Version", "1.0"]);
+    configSheet.appendRow(["Owner ID", getOwnerId() || "Not set"]);
+    configSheet.appendRow(["", ""]);
+    configSheet.appendRow(["Group Codes", "Group Info"]);
+    
+    // Định dạng sheet Config
+    configSheet.getRange(1, 1, 1, 2).setFontWeight("bold");
+    configSheet.getRange(7, 1, 1, 2).setFontWeight("bold");
+    configSheet.setColumnWidth(1, 200);
+    configSheet.setColumnWidth(2, 300);
+  }
+  
+  return configSheet;
+}
+
+/**
+ * Đảm bảo mỗi nhóm có Sheet riêng trong Spreadsheet hiện tại
+ */
+function ensureSheet(chatId) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = null;
+    
+    // Tìm sheet theo chatId hoặc tạo mới nếu chưa có
+    try {
+      sheet = ss.getSheetByName(`Group_${chatId}`);
+    } catch (e) {
+      // Sheet không tồn tại
+    }
+    
+    if (!sheet) {
+      // Tạo mới sheet cho nhóm này
+      sheet = ss.insertSheet(`Group_${chatId}`);
+      
+      // Tạo header cho sheet mới
+      sheet.appendRow([
+        "Thời gian", 
+        "Người xử lý", 
+        "ID tin nhắn", 
+        "Mã nhóm đích", 
+        "ID nhóm đích",
+        "Loại nội dung",
+        "Người gửi gốc"
+      ]);
+      
+      // Định dạng header
+      sheet.getRange(1, 1, 1, 7).setFontWeight("bold");
+      sheet.setFrozenRows(1);
+      
+      // Thiết lập độ rộng cột
+      sheet.setColumnWidth(1, 180); // Thời gian
+      sheet.setColumnWidth(2, 150); // Người xử lý
+      sheet.setColumnWidth(4, 100); // Mã nhóm
+      sheet.setColumnWidth(6, 120); // Loại nội dung
+      sheet.setColumnWidth(7, 150); // Người gửi gốc
+      
+      // Đảm bảo có sheet Config và cập nhật thông tin nhóm
+      setupConfigSheet();
+      updateGroupInfo(chatId);
+    }
+    
+    return sheet;
+  } catch (error) {
+    Logger.log(`Error ensuring sheet: ${error}`);
+    return null;
+  }
+}
+
+/**
+ * Cập nhật thông tin nhóm trong sheet Config
+ */
+function updateGroupInfo(chatId) {
+  try {
+    // Lấy thông tin nhóm từ Telegram
+    const response = UrlFetchApp.fetch(`${API}/getChat?chat_id=${chatId}`);
+    const chatInfo = JSON.parse(response.getContentText()).result;
+    const chatName = chatInfo.title || `Private (${chatId})`;
+    
+    // Lưu tên nhóm vào properties
+    const props = PropertiesService.getScriptProperties();
+    const groupNames = JSON.parse(props.getProperty('groupNames') || '{}');
+    groupNames[chatId] = chatName;
+    props.setProperty('groupNames', JSON.stringify(groupNames));
+    
+    // Cập nhật sheet Config
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const configSheet = ss.getSheetByName("Config");
+    
+    // Tìm dòng trống trong phần Group Codes
+    let startRow = 8; // Dòng bắt đầu phần nhóm (sau header)
+    let foundEmpty = false;
+    let foundExisting = false;
+    let emptyRow = 0;
+    
+    // Tìm xem nhóm đã tồn tại chưa hoặc tìm dòng trống
+    while (!foundExisting && startRow < 100) { // Giới hạn 100 dòng để tránh vòng lặp vô hạn
+      const value = configSheet.getRange(startRow, 1).getValue();
+      
+      if (value === `Group ${chatId}`) {
+        foundExisting = true;
+        break;
+      }
+      
+      if (!foundEmpty && value === "") {
+        foundEmpty = true;
+        emptyRow = startRow;
+      }
+      
+      startRow++;
+    }
+    
+    // Thêm mới hoặc cập nhật
+    if (foundExisting) {
+      configSheet.getRange(startRow, 2).setValue(chatName);
+    } else if (foundEmpty) {
+      configSheet.getRange(emptyRow, 1).setValue(`Group ${chatId}`);
+      configSheet.getRange(emptyRow, 2).setValue(chatName);
+    } else {
+      // Nếu không tìm thấy dòng trống, thêm dòng mới
+      configSheet.appendRow([`Group ${chatId}`, chatName]);
+    }
+    
+  } catch (error) {
+    Logger.log(`Error updating group info: ${error}`);
+  }
+}
+
+/**
+ * Lấy tên nhóm từ ID
+ */
+function getGroupName(chatId) {
+  const props = PropertiesService.getScriptProperties();
+  const groupNames = JSON.parse(props.getProperty('groupNames') || '{}');
+  return groupNames[chatId];
+}
+
+/**
+ * Xác định loại nội dung của tin nhắn
+ */
+function getMessageType(message) {
+  if (message.photo) return "ảnh";
+  if (message.video) return "video";
+  if (message.document) return "file";
+  if (message.audio) return "audio";
+  if (message.voice) return "voice message";
+  if (message.sticker) return "sticker";
+  if (message.animation) return "animation";
+  if (message.text) return "tin nhắn văn bản";
+  return "nội dung khác";
+}
+
+/**
+ * Tạo URL để truy cập webapp
+ */
+function getWebAppURL() {
+  return ScriptApp.getService().getUrl();
+}
+
+/**
+ * Trang web đơn giản khi truy cập vào webapp
+ */
+function doGet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ownerId = getOwnerId() || "Not set";
+  
+  return HtmlService.createHtmlOutput(`
+    <h1>Telegram Bot Webhook Service</h1>
+    <p>Bot đang hoạt động.</p>
+    <p>Webhook URL: ${getWebAppURL()}</p>
+    <p>Owner ID: ${ownerId}</p>
+    <p>Spreadsheet: <a href="${ss.getUrl()}" target="_blank">Xem log</a></p>
+  `);
+}
+
+/* ---------- Helpers ---------- */
+
+/**
+ * Gọi API Telegram
+ */
+function call(url, payload) {
+  try {
+    return UrlFetchApp.fetch(url, {
+      method: 'post',
+      payload: payload || {},
+      muteHttpExceptions: true
+    });
+  } catch (error) {
+    Logger.log(`API call error: ${error}`);
+    throw error;
+  }
+}
+
+/**
+ * Gửi tin nhắn đến chat
+ */
+function sendMessage(chatId, text) {
+  call(`${API}/sendMessage`, {
+    chat_id: chatId,
+    text: text,
+    parse_mode: 'Markdown'
+  });
+}
+
+/**
+ * Lưu mã code của nhóm
+ */
+function setGroupCode(code, chatId) {
+  const props = PropertiesService.getScriptProperties();
+  const map = JSON.parse(props.getProperty('codeMap') || '{}');
+  map[code] = chatId;
+  props.setProperty('codeMap', JSON.stringify(map));
+  
+  // Cập nhật thông tin trong sheet Config
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const configSheet = ss.getSheetByName("Config");
+    if (!configSheet) {
+      setupConfigSheet();
+    }
+    
+    // Tìm dòng với thông tin nhóm này
+    let startRow = 8;
+    let found = false;
+    
+    while (startRow < 100) {
+      const value = configSheet.getRange(startRow, 1).getValue();
+      if (value === `Group ${chatId}`) {
+        found = true;
+        break;
+      }
+      if (value === "") {
+        break;
+      }
+      startRow++;
+    }
+    
+    // Cập nhật thông tin mã code
+    if (found) {
+      const groupName = getGroupName(chatId) || chatId;
+      configSheet.getRange(startRow, 2).setValue(`${groupName} (code: ${code})`);
+    }
+  } catch (error) {
+    Logger.log(`Error updating config sheet: ${error}`);
+  }
+  updateGroupTrackingInfo(chatId, code);
+}
+
+/**
+ * Lấy ID nhóm từ mã code
+ */
+function getGroupByCode(code) {
+  const map = JSON.parse(PropertiesService.getScriptProperties().getProperty('codeMap') || '{}');
+  return map[code];
+}
+
+/**
+ * Lấy tất cả các nhóm và mã code
+ */
+function getAllGroups() {
+  const props = PropertiesService.getScriptProperties();
+  return JSON.parse(props.getProperty('codeMap') || '{}');
+}
+
+/**
+ * Ghi log vào Sheets
+ */
+function logToSheets(msg, destId, code, contentType = "tin nhắn văn bản", originalSender = "") {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // Log vào sheet của nhóm nguồn
+    const sourceSheet = ss.getSheetByName(`Group_${msg.chat.id}`);
+    if (sourceSheet) {
+      sourceSheet.appendRow([
+        new Date(), 
+        msg.from.username || msg.from.first_name || "Unknown",
+        msg.message_id, 
+        code, 
+        destId,
+        contentType,
+        originalSender
+      ]);
+    }
+    
+    // Log vào sheet của nhóm đích
+    const destSheet = ss.getSheetByName(`Group_${destId}`);
+    if (destSheet) {
+      destSheet.appendRow([
+        new Date(), 
+        msg.from.username || msg.from.first_name || "Unknown",
+        msg.message_id, 
+        code, 
+        destId,
+        contentType,
+        originalSender
+      ]);
+    }
+  } catch (error) {
+    Logger.log(`Error logging to sheets: ${error}`);
+  }
+}
+
+/**
+ * Khởi tạo bot từ đầu
+ */
+function initializeBot() {
+  // Thiết lập sheet Config
+  setupConfigSheet();
+  // Thiết lập sheet theo dõi nhóm
+setupGroupTrackingSheet();
+setupUserTrackingSheet(); // Thêm dòng này
+  
+  // Cập nhật ngày khởi tạo
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const configSheet = ss.getSheetByName("Config");
+  configSheet.getRange(3, 2).setValue(new Date());
+  configSheet.getRange(5, 2).setValue(getOwnerId() || "Not set");
+  
+  return "Bot đã được khởi tạo thành công trong Spreadsheet hiện tại!";
+}
+
+/**
+ * Hàm kiểm tra trạng thái bot
+ */
+function checkBotStatus() {
+  const url = `${API}/getMe`;
+  try {
+    const response = UrlFetchApp.fetch(url);
+    const botInfo = JSON.parse(response.getContentText());
+    return `Bot @${botInfo.result.username} đang hoạt động`;
+  } catch (error) {
+    return `Lỗi kết nối đến bot: ${error}`;
+  }
+}
+/**
+ * Tạo hoặc cập nhật sheet theo dõi nhóm
+ */
+function setupGroupTrackingSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Tìm hoặc tạo sheet GroupTracking
+  let trackingSheet = ss.getSheetByName("GroupTracking");
+  if (!trackingSheet) {
+    trackingSheet = ss.insertSheet("GroupTracking");
+    
+    // Thiết lập nội dung cơ bản
+    trackingSheet.appendRow(["Group ID", "Group Name", "Join Time", "Code"]);
+    
+    // Định dạng sheet
+    trackingSheet.getRange(1, 1, 1, 4).setFontWeight("bold");
+    trackingSheet.setColumnWidth(1, 150); // ID
+    trackingSheet.setColumnWidth(2, 250); // Tên
+    trackingSheet.setColumnWidth(3, 180); // Thời gian
+    trackingSheet.setColumnWidth(4, 100); // Mã code
+    trackingSheet.setFrozenRows(1);
+  }
+  
+  return trackingSheet;
+}
+
+/**
+ * Cập nhật thông tin nhóm trong sheet theo dõi
+ */
+function updateGroupTrackingInfo(chatId, code = "") {
+  try {
+    // Đảm bảo sheet GroupTracking tồn tại
+    const trackingSheet = setupGroupTrackingSheet();
+    
+    // Lấy thông tin nhóm từ Telegram
+    const response = UrlFetchApp.fetch(`${API}/getChat?chat_id=${chatId}`);
+    const chatInfo = JSON.parse(response.getContentText()).result;
+    const chatName = chatInfo.title || `Private (${chatId})`;
+    
+    // Tìm nhóm trong sheet
+    const data = trackingSheet.getDataRange().getValues();
+    let rowIndex = -1;
+    
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0].toString() === chatId.toString()) {
+        rowIndex = i + 1; // +1 vì index bắt đầu từ 1 trong Sheets
+        break;
+      }
+    }
+    
+    if (rowIndex > 0) {
+      // Cập nhật tên nhóm
+      trackingSheet.getRange(rowIndex, 2).setValue(chatName);
+      
+      // Cập nhật code nếu được cung cấp
+      if (code) {
+        trackingSheet.getRange(rowIndex, 4).setValue(code);
+      }
+    } else {
+      // Thêm nhóm mới
+      trackingSheet.appendRow([
+        chatId, 
+        chatName, 
+        new Date(), 
+        code
+      ]);
+    }
+    
+    return true;
+  } catch (error) {
+    Logger.log(`Error updating group tracking: ${error}`);
+    return false;
+  }
+}
+
+/**
+ * Lấy danh sách nhóm từ sheet theo dõi
+ */
+function getGroupsFromTrackingSheet() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const trackingSheet = ss.getSheetByName("GroupTracking");
+    
+    if (!trackingSheet) {
+      return [];
+    }
+    
+    const data = trackingSheet.getDataRange().getValues();
+    const groups = [];
+    
+    // Bỏ qua hàng tiêu đề
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0]) {
+        groups.push({
+          id: data[i][0].toString(),
+          name: data[i][1],
+          joinTime: data[i][2],
+          code: data[i][3] || ""
+        });
+      }
+    }
+    
+    return groups;
+  } catch (error) {
+    Logger.log(`Error getting groups from tracking sheet: ${error}`);
+    return [];
+  }
+}
