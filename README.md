@@ -121,9 +121,9 @@ npm run linux:run-24-7
 ✅ **TIN NHẮN SẼ ĐƯỢC REPLY:**
 ```
 Tiền vào: +50,000 đ
-Tài khoản: 20918031 tại ACB
-Lúc: 2025-01-20 14:30:15
-Nội dung CK: TRAN VAN NAM chuyen tien
+
+
+
 ```
 
 ❌ **TIN NHẮN SẼ KHÔNG ĐƯỢC REPLY:**
@@ -257,7 +257,7 @@ Bot sẽ hiển thị log chi tiết trong console:
 ```
 [20/01/2025 14:30:15] 🤖 Bank Transaction Userbot khởi tạo
 [20/01/2025 14:30:16] ✅ Kết nối thành công!
-[20/01/2025 14:30:17] 💰 Phát hiện giao dịch: +50,000đ từ ACB - 20918031
+[20/01/2025 14:30:17] 💰 Phát hiện giao dịch: +50,000đ từ AC
 [20/01/2025 14:30:17] ✅ Đã reply tin nhắn giao dịch với: "1"
 ```
 
