@@ -7,7 +7,7 @@ module.exports = {
   phoneNumber: '+18633202397',
   
   // Session string (sẽ được tạo tự động)
-  sessionString: '',
+  sessionString: '1BQANOTEuMTA4LjU2LjE0MwG7ASAEru0JJSFmWHfKKpOEj3pPCh2LhPhpzRyrOz7Tu+7yIewuJDvzSvVKjPotBXdHZcjPUzJlweICw+Bd5/mjJvg1y5K3rmQBLx5FeHc3+6ggKNtTmUQ555V7/ntiafwjUQKmYPHOikV84h01FM/Bbpjzo+vC4WjZxuyPAbVGYgNWtUtroKUQB2DHdE9595bBUxa0C+aCOMI5cSu6rNukyDlIA6tA3EfekmIwAbGYA/3B4FeJ6JTneKCqZmaOCAaW/ZWznVXCwVQ1nTb1UnJlyAf4zIXN7Ww+XKjhwawV6HNFdDeIarbZA23wx83igz3DvehErr37VhbNoPlTJsBV2A==',
   
   // Settings file path
   settingsFile: './settings.json',

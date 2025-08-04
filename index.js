@@ -187,17 +187,61 @@ class BankTransactionUserbot {
     // Lắng nghe reactions via Raw events
     this.client.addEventHandler(async (event) => {
       try {
-        // Filter cho UpdateMessageReactions
+        // 🔍 DEBUG: Log tất cả raw events để debug
+        if (event.className && (
+          event.className === 'UpdateMessageReactions' || 
+          event.className === 'UpdateChatUserTyping' ||
+          event.className === 'UpdateUserStatus' ||
+          event.className.includes('Reaction') ||
+          event.className.includes('Message')
+        )) {
+          Utils.log(`🔍 [RAW-EVENT] ${event.className}:`, JSON.stringify(event, null, 2));
+        }
+
+        // Filter cho UpdateMessageReactions (chính)
         if (event.className === 'UpdateMessageReactions') {
           await this.handleMessageReaction(event);
         }
+        
+        // Thử các event types khác có thể chứa reaction info
+        else if (event.className === 'UpdateEditMessage' && event.message && event.message.reactions) {
+          Utils.log(`🔍 [FALLBACK] Tìm thấy reactions trong UpdateEditMessage`);
+          await this.handleAlternativeReaction(event);
+        }
+        
+        // Fallback cho regular groups - thử UpdateShort
+        else if (event.className === 'UpdateShort' && event.update && event.update.className === 'UpdateMessageReactions') {
+          Utils.log(`🔍 [FALLBACK] Tìm thấy UpdateMessageReactions trong UpdateShort`);
+          await this.handleMessageReaction(event.update);
+        }
+        
       } catch (error) {
         Utils.log(`❌ Lỗi xử lý reaction: ${error.message}`);
       }
     }, new Raw({}));
 
+    // Đăng ký periodic check cho regular groups (fallback)
+    this.setupRegularGroupReactionPolling();
+    
     this.eventHandlerRegistered = true;
-    Utils.log('📱 Đã đăng ký event handlers');
+    Utils.log('📱 Đã đăng ký event handlers với fallback cho regular groups');
+  }
+
+  // Thiết lập polling cho regular groups reactions
+  setupRegularGroupReactionPolling() {
+    // Track recent messages để check reactions
+    this.recentMessages = new Map(); // messageKey -> {chatId, messageId, timestamp}
+    
+    // Cleanup old messages every 5 minutes
+    setInterval(() => {
+      const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+      for (const [key, data] of this.recentMessages.entries()) {
+        if (data.timestamp < fiveMinutesAgo) {
+          this.recentMessages.delete(key);
+        }
+      }
+      Utils.log(`🧹 Cleaned up old message tracking. Current count: ${this.recentMessages.size}`);
+    }, 5 * 60 * 1000);
   }
 
   // Xử lý tin nhắn mới
@@ -212,6 +256,16 @@ class BankTransactionUserbot {
 
     // Tạo unique key để track message
     const messageKey = `${chatId}_${messageId}`;
+    
+    // Track messages cho regular groups (để check reactions sau)
+    if (chatId.toString().match(/^-\d{10}$/)) { // Regular group format
+      this.recentMessages.set(messageKey, {
+        chatId: chatId,
+        messageId: messageId,
+        timestamp: currentTime
+      });
+      Utils.log(`📝 [TRACK] Tracking message in regular group: ${messageKey}`);
+    }
     
     // Skip nếu đã xử lý message này rồi (trong 30 giây qua)
     if (this.processedMessages.has(messageKey)) {
@@ -281,6 +335,9 @@ class BankTransactionUserbot {
   // Xử lý message reactions
   async handleMessageReaction(event) {
     try {
+      // 🐛 DEBUG: Log raw reaction event
+      Utils.log(`🔍 [DEBUG] Phát hiện reaction event:`, JSON.stringify(event, null, 2));
+      
       // Parse UpdateMessageReactions event structure
       let chatId;
       if (event.peer && event.peer.channelId) {
@@ -300,7 +357,14 @@ class BankTransactionUserbot {
       const messageId = event.msgId;
       const reactions = event.reactions;
       
-      if (!reactions || !reactions.recentReactions) return;
+      // 🐛 DEBUG: Log parsed info
+      Utils.log(`🔍 [DEBUG] Parsed - ChatId: ${chatId}, MessageId: ${messageId}`);
+      Utils.log(`🔍 [DEBUG] Reactions:`, JSON.stringify(reactions, null, 2));
+      
+      if (!reactions || !reactions.recentReactions) {
+        Utils.log(`🔍 [DEBUG] Không có reactions hoặc recentReactions`);
+        return;
+      }
 
       // Lấy user ID của người react
       const latestReaction = reactions.recentReactions[0];
@@ -309,22 +373,44 @@ class BankTransactionUserbot {
         return;
       }
 
-      // Parse userId from reaction structure
+      // 🐛 DEBUG: Log reaction details
+      Utils.log(`🔍 [DEBUG] Latest reaction:`, JSON.stringify(latestReaction, null, 2));
 
+      // Parse userId from reaction structure
       let reactorUserId;
       if (latestReaction.userId) {
         reactorUserId = latestReaction.userId.toString();
+        Utils.log(`🔍 [DEBUG] User ID from userId: ${reactorUserId}`);
       } else if (latestReaction.peerId && latestReaction.peerId.userId) {
         reactorUserId = latestReaction.peerId.userId.toString();
+        Utils.log(`🔍 [DEBUG] User ID from peerId.userId: ${reactorUserId}`);
       } else if (latestReaction.peer_id && latestReaction.peer_id.user_id) {
         reactorUserId = latestReaction.peer_id.user_id.toString();
+        Utils.log(`🔍 [DEBUG] User ID from peer_id.user_id: ${reactorUserId}`);
       } else {
         Utils.log(`❌ Không thể parse userId từ reaction:`, JSON.stringify(latestReaction));
         return;
       }
       
+      // 🐛 DEBUG: Log emoji detection
+      let reactionEmoji = '';
+      if (latestReaction.reaction) {
+        if (latestReaction.reaction._ === 'ReactionEmoji') {
+          reactionEmoji = latestReaction.reaction.emoticon;
+        } else if (latestReaction.reaction.className === 'ReactionEmoji') {
+          reactionEmoji = latestReaction.reaction.emoticon;
+        }
+        Utils.log(`🔍 [DEBUG] Detected emoji: ${reactionEmoji}, reaction type: ${latestReaction.reaction._ || latestReaction.reaction.className}`);
+      }
+      
+      // 🐛 DEBUG: Admin check
+      const isAdmin = this.isOwnerOrAdmin(reactorUserId);
+      const adminList = Utils.getAdminList(this.settings);
+      Utils.log(`🔍 [DEBUG] User ${reactorUserId} admin check: ${isAdmin}`);
+      Utils.log(`🔍 [DEBUG] Current admin list: [${adminList.join(', ')}]`);
+      
       // Kiểm tra quyền admin
-      if (!this.isOwnerOrAdmin(reactorUserId)) {
+      if (!isAdmin) {
         Utils.log(`🚫 User ${reactorUserId} không phải admin - bỏ qua reaction`);
         return;
       }
@@ -361,6 +447,58 @@ class BankTransactionUserbot {
 
     } catch (error) {
       Utils.log(`❌ Lỗi xử lý reaction: ${error.message}`);
+    }
+  }
+
+  // Xử lý alternative reaction events (fallback cho regular groups)
+  async handleAlternativeReaction(event) {
+    try {
+      Utils.log(`🔍 [ALTERNATIVE] Processing alternative reaction event`);
+      Utils.log(`🔍 [ALTERNATIVE] Original event:`, JSON.stringify(event, null, 2));
+      
+      // Tìm peer từ nhiều nguồn khác nhau
+      let peer = null;
+      
+      if (event.peer) {
+        peer = event.peer;
+      } else if (event.message && event.message.peer) {
+        peer = event.message.peer;
+      } else if (event.message && event.message.peerId) {
+        peer = event.message.peerId;
+      } else if (event.message && event.message.chatId) {
+        // Tạo peer từ chatId
+        const chatId = event.message.chatId;
+        if (chatId.toString().startsWith('-100')) {
+          // Supergroup/channel
+          const channelId = chatId.toString().substring(4);
+          peer = { channelId: channelId, className: 'PeerChannel' };
+        } else if (chatId.toString().startsWith('-')) {
+          // Regular group
+          const groupId = chatId.toString().substring(1);
+          peer = { chatId: groupId, className: 'PeerChat' };
+        } else {
+          // Private chat
+          peer = { userId: chatId, className: 'PeerUser' };
+        }
+      }
+      
+      Utils.log(`🔍 [ALTERNATIVE] Detected peer:`, JSON.stringify(peer, null, 2));
+      
+      // Tạo fake reaction event từ alternative source
+      const fakeReactionEvent = {
+        peer: peer,
+        msgId: event.message ? event.message.id : event.msgId,
+        reactions: event.message ? event.message.reactions : event.reactions,
+        className: 'UpdateMessageReactions'
+      };
+      
+      Utils.log(`🔍 [ALTERNATIVE] Created fake reaction event:`, JSON.stringify(fakeReactionEvent, null, 2));
+      
+      // Sử dụng hàm xử lý reaction chính
+      await this.handleMessageReaction(fakeReactionEvent);
+      
+    } catch (error) {
+      Utils.log(`❌ Lỗi xử lý alternative reaction: ${error.message}`);
     }
   }
 
@@ -1609,7 +1747,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         Utils.log(`${forwardPrefix}: ${messageType} từ ${originalSender} (${chatId} -> ${activeRule.destGroupId}, trigger: ${trigger})`);
         
         // Thông báo thành công với thông tin album nếu có
-        let successMessage = isForward2 ? `` : `🤖 Auto-forward`;
+        let successMessage = isForward2 ? `` : ``;
         
         if (result.albumSize) {
           successMessage += ``;
