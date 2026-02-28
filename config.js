@@ -1,10 +1,10 @@
 module.exports = {
   // Telegram API credentials
   // Bạn cần lấy từ https://my.telegram.org/apps
-  apiId: '20074882',
-  apiHash: 'a050e624a7696df857f053849892f82b',
+  apiId: '22561984',
+  apiHash: '83cbfa9fbc70d63535f7ed0959431e29',
  
-  phoneNumber: '+18633202397',
+  phoneNumber: '+84522982414',
   
   // Session string (sẽ được tạo tự động)
   sessionString: '',
