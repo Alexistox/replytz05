@@ -17,6 +17,8 @@ class BankTransactionUserbot {
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
+    this.migratePic2Settings();
+    this.migrateCopyAllWatermark();
     
     Utils.log('🤖 Bank Transaction Userbot khởi tạo');
     Utils.log(`📊 Chế độ: Reply theo từng nhóm`);
@@ -41,6 +43,90 @@ class BankTransactionUserbot {
     }
   }
 
+  migratePic2Settings() {
+    if (Utils.normalizePic2Settings(this.settings)) {
+      Utils.saveSettings(this.settings);
+      Utils.log('✅ Đã migrate pic2Settings (nhiều rule / nhóm)');
+    }
+  }
+
+  migrateCopyAllWatermark() {
+    if (!this.settings.copyAllWatermark || typeof this.settings.copyAllWatermark !== 'object') {
+      this.settings.copyAllWatermark = {};
+      Utils.saveSettings(this.settings);
+      Utils.log('✅ Đã khởi tạo copyAllWatermark');
+    }
+  }
+
+  resolveSessionFilePath() {
+    const path = require('path');
+    const rel = config.sessionFile || './telegram.session';
+    return path.isAbsolute(rel) ? rel : path.join(__dirname, rel);
+  }
+
+  /** Đọc session: ưu tiên file session, sau đó config.sessionString */
+  loadSessionStringFromDisk() {
+    const fs = require('fs');
+    let loaded = (config.sessionString || '').trim();
+    const sessionPath = this.resolveSessionFilePath();
+    try {
+      if (fs.existsSync(sessionPath)) {
+        const fromFile = fs.readFileSync(sessionPath, 'utf8').trim();
+        if (fromFile.length > 10) {
+          loaded = fromFile;
+          Utils.log(`🔑 Đã đọc session từ file: ${sessionPath}`);
+        }
+      }
+    } catch (e) {
+      Utils.log(`⚠️ Không đọc được session file: ${e.message}`);
+    }
+    return loaded;
+  }
+
+  /** Lưu session sau đăng nhập: ghi file + đồng bộ dòng sessionString trong config.js (JSON.stringify, tránh lỗi ký tự đặc biệt) */
+  async persistSession(sessionString) {
+    const fsp = require('fs').promises;
+    const path = require('path');
+    const sessionPath = this.resolveSessionFilePath();
+    try {
+      await fsp.mkdir(path.dirname(sessionPath), { recursive: true });
+    } catch (e) {
+      Utils.log(`⚠️ mkdir session: ${e.message}`);
+    }
+    try {
+      await fsp.writeFile(sessionPath, sessionString, 'utf8');
+      Utils.log(`💾 Đã lưu session vào file: ${sessionPath}`);
+    } catch (e) {
+      Utils.log(`❌ Không ghi được file session: ${e.message}`);
+    }
+    config.sessionString = sessionString;
+    const patched = this.patchConfigSessionLine(sessionString);
+    if (patched) {
+      Utils.log('💾 Đã đồng bộ session vào config.js');
+    }
+  }
+
+  patchConfigSessionLine(sessionString) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const configPath = path.join(__dirname, 'config.js');
+      let content = fs.readFileSync(configPath, 'utf8');
+      const line = `sessionString: ${JSON.stringify(sessionString)},`;
+      if (/^\s*sessionString:\s*.+$/m.test(content)) {
+        content = content.replace(/^\s*sessionString:\s*.+$/m, line);
+      } else {
+        Utils.log('⚠️ Không tìm thấy dòng sessionString trong config.js để cập nhật');
+        return false;
+      }
+      fs.writeFileSync(configPath, content, 'utf8');
+      return true;
+    } catch (e) {
+      Utils.log(`⚠️ Không ghi config.js (volume chỉ đọc?): ${e.message}`);
+      return false;
+    }
+  }
+
   // Khởi tạo client Telegram
   async initializeClient() {
     try {
@@ -54,16 +140,16 @@ class BankTransactionUserbot {
         throw new Error('Vui lòng cập nhật số điện thoại trong config.js');
       }
 
-      const stringSession = new StringSession(config.sessionString);
-      
+      const loadedSession = this.loadSessionStringFromDisk();
+      const stringSession = new StringSession(loadedSession);
+
       this.client = new TelegramClient(stringSession, parseInt(config.apiId), config.apiHash, {
         connectionRetries: 5,
       });
 
       Utils.log('🔗 Đang kết nối tới Telegram...');
-      
-      // Check if session exists
-      const hasValidSession = config.sessionString && config.sessionString.length > 10;
+
+      const hasValidSession = loadedSession.length > 10;
       if (hasValidSession) {
         Utils.log('🔑 Sử dụng session có sẵn - không cần OTP/2FA');
       } else {
@@ -98,12 +184,11 @@ class BankTransactionUserbot {
         },
       });
 
-      // Save session string để lần sau không cần đăng nhập lại
+      // Tự lưu session sau đăng nhập (lần đầu hoặc khi session đổi so với file/config)
       const currentSession = this.client.session.save();
-      if (currentSession !== config.sessionString) {
-        Utils.log('💾 Session string đã được cập nhật - đang lưu...');
-        await this.saveSessionToConfig(currentSession);
-        Utils.log('✅ Session đã được lưu vào config.js');
+      if (currentSession && currentSession.length > 10 && currentSession !== loadedSession) {
+        Utils.log('💾 Session mới — đang lưu tự động (file + config.js)...');
+        await this.persistSession(currentSession);
       }
 
       Utils.log('✅ Kết nối thành công!');
@@ -128,43 +213,6 @@ class BankTransactionUserbot {
         resolve(answer);
       });
     });
-  }
-
-  // Save session string vào config.js
-  async saveSessionToConfig(sessionString) {
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      
-      // Đọc file config hiện tại
-      const configPath = path.join(__dirname, 'config.js');
-      let configContent = fs.readFileSync(configPath, 'utf8');
-      
-      // Replace sessionString
-      const regex = /sessionString:\s*['"`][^'"`]*['"`]/;
-      const newSessionLine = `sessionString: '${sessionString}'`;
-      
-      if (regex.test(configContent)) {
-        configContent = configContent.replace(regex, newSessionLine);
-      } else {
-        // Nếu không tìm thấy, thêm vào
-        configContent = configContent.replace(
-          /(apiHash:\s*['"`][^'"`]*['"`],?\s*)/,
-          `$1\n  \n  sessionString: '${sessionString}',`
-        );
-      }
-      
-      // Ghi lại file
-      fs.writeFileSync(configPath, configContent, 'utf8');
-      
-      // Update config trong memory
-      config.sessionString = sessionString;
-      
-      return true;
-    } catch (error) {
-      Utils.log(`❌ Lỗi khi lưu session: ${error.message}`);
-      return false;
-    }
   }
 
   // Đăng ký event handlers
@@ -643,6 +691,22 @@ class BankTransactionUserbot {
           }
           await this.handleAdminRemoveCommand(args, chatId, messageId);
           break;
+
+      case '/copyall':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+        await this.handleCopyAllCommand(args, chatId, messageId, originalMessage);
+        break;
+
+      case '/newcopy':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+        await this.handleNewCopyCommand(args, chatId, messageId, originalMessage);
+        break;
     }
   }
 
@@ -697,9 +761,9 @@ class BankTransactionUserbot {
       Object.values(this.settings.groupSettings).filter(g => g.replyEnabled).length : 0;
     const groupReplyStatus = groupReplyCount > 0 ? `🟢 ${groupReplyCount} groups` : '🔴 TẮT';
     
-    // Đếm số pic2 settings
-    const pic2Count = this.settings.pic2Settings ? Object.keys(this.settings.pic2Settings).length : 0;
-    const pic2Status = pic2Count > 0 ? `🟢 ${pic2Count} groups` : '🔴 TẮT';
+    // Đếm số pic2 rules (tất cả nhóm)
+    const pic2RuleCount = Utils.countPic2Rules(this.settings);
+    const pic2Status = pic2RuleCount > 0 ? `🟢 ${pic2RuleCount} rules` : '🔴 TẮT';
     
     // Đếm số forward rules
     const forwardCount = Utils.getActiveForwardRules(this.settings).length;
@@ -712,6 +776,11 @@ class BankTransactionUserbot {
     // Đếm số admin users
     const adminCount = Utils.getAdminList(this.settings).length;
     const adminStatus = adminCount > 0 ? `🟢 ${adminCount} admins` : '🔴 NONE';
+
+    const wmKeys = this.settings.copyAllWatermark
+      ? Object.keys(this.settings.copyAllWatermark).length
+      : 0;
+    const copyWmStatus = wmKeys > 0 ? `🟢 ${wmKeys} cặp nguồn/đích` : '🔴 chưa dùng';
     
     const statusMessage = `
 📊 **Trạng thái UserBot**
@@ -723,6 +792,7 @@ class BankTransactionUserbot {
 📸 Pic2 auto reply: ${pic2Status}
 🔄 Auto forward: ${forwardStatus}
 🌐 Global forward2: ${forward2Status}
+📋 Copyall watermark: ${copyWmStatus}
 👑 Admin users: ${adminStatus}
 👍 Reaction support: 🟢 BẬT (reply + admin reaction modes)
 ⏱️ Uptime: ${hours}h ${minutes}m
@@ -739,6 +809,8 @@ class BankTransactionUserbot {
 /setforward2 - Thiết lập global forward 👑
 /listforward - Xem forward rules 👑
 /listforward2 - Xem global forward rules 👑
+/copyall - Copy lịch sử vào nhóm này 👑
+/newcopy - Copy tin mới (sau /copyall) 👑
 /help - Hướng dẫn
 
 👑 = Admin only commands
@@ -757,21 +829,47 @@ class BankTransactionUserbot {
 2. Tự động reply hình ảnh từ user cụ thể trong group cụ thể
 3. Chuyển tiếp tự động tin nhắn (text, ảnh, video, file, albums) với emoji/text triggers
 
-**Định dạng tin nhắn giao dịch:**
+**Định dạng tin nhắn giao dịch (VN):**
 - Tiền vào: +2,000 đ
 - Tài khoản: 20918031 tại ACB  
 - Lúc: 2025-07-20 11:10:22
 - Nội dung CK: ...
+
+**Định dạng tiếng Trung (đủ 4 dòng: 入款 / 账户 / 时间 / 备注):**
+- 入款：+2,000.00元 · 账户：6222****1234 · 时间：2025-07-20 11:10:22 (hoặc 2025年07月20日 11:10:22) · 备注：…
 
 **Commands - Giao dịch:**
 /1 on - Bật chức năng reply giao dịch cho nhóm này
 /1 off - Tắt chức năng reply giao dịch cho nhóm này
 /1 - Xem trạng thái nhóm hiện tại
 
-**Commands - Pic2 (Auto reply hình ảnh):**
-/pic2 on [groupId] [userId/@username] [message] - Bật auto reply
-/pic2 off [groupId] - Tắt auto reply cho group
-/pic2 list - Xem danh sách cấu hình
+**Commands - Pic2 (auto reply khi gửi ảnh, 👑 admin):**
+/pic2 — Hướng dẫn Pic2 (gõ riêng lệnh này)
+/pic2 on [groupId] [userId hoặc @username] [nội dung reply] — Thêm rule mới (cùng nhóm có thể nhiều rule, không ghi đè rule cũ)
+/pic2 list — Liệt kê tất cả rule (mỗi dòng có # thứ tự và \`ruleId\`)
+/pic2 list [groupId] — Chỉ các rule của nhóm đó
+/pic2 off [groupId] hoặc /pic2 off all [groupId] — Xóa hết rule của nhóm
+/pic2 off [groupId] [ruleId] — Xóa đúng một rule (copy \`ruleId\` từ tin bot trả lời sau \`on\` hoặc từ list)
+/pic2 off [groupId] [số] — Xóa theo số # trong list (1, 2, …; nên \`/pic2 list\` lại sau khi đã xóa)
+
+**Ví dụ Pic2:**
+/pic2 on -1001234567890 @username Xin chào!
+/pic2 on -1001234567890 123456789 Hello world!
+/pic2 list
+/pic2 list -1001234567890
+/pic2 off -1001234567890 a1b2c3d4
+/pic2 off -1001234567890 1
+/pic2 off all -1001234567890
+
+**Lưu ý Pic2:** chỉ chạy khi user gửi **ảnh** (không tính sticker). Nhiều rule cùng khớp một user → dùng rule **đầu tiên** trong list (một reply cho một tin ảnh).
+
+**Commands - Copy hàng loạt (👑 admin, gõ trong nhóm/kênh đích):**
+/copyall [thời gian] [id nguồn] — Copy lịch sử từ nhóm/kênh nguồn vào **chat đang gõ lệnh**. Thời gian: \`24h\`, \`7d\`, \`2w\` hoặc ngày \`YYYY-MM-DD\` (UTC 00:00). Một tham số là ID (số), một tham số là mốc thời gian (thứ tự tùy ý).
+/newcopy [id nguồn] — Copy các tin **mới hơn** watermark lần copy gần nhất (sau khi đã chạy /copyall ít nhất một lần cho cặp nguồn + đích này).
+
+**Giới hạn & lưu ý:** số tin tối đa mỗi lần quét/gửi cấu hình trong \`config.js\` (\`copyAllMaxCollect\`, \`copyAllMaxCopy\`) hoặc env \`COPYALL_MAX_COLLECT\` / \`COPYALL_MAX_COPY\`; mặc định 5000 / 3000. Có delay chống flood — tăng quá cao dễ FLOOD_WAIT. Một số loại (poll, v.v.) có thể chỉ forward. Album rất lớn có thể không gom đủ. Hết cap thì dùng /newcopy, không chạy lại /copyall cùng mốc.
+
+**Lọc khi copy:** bỏ dòng caption/chữ có dấu hiệu quảng cáo hoặc cờ bạc (tên nhà cái, đăng ký nhận thưởng, link lạ, từ khóa tiếng Trung/emoji spam cờ bạc…). Tin chỉ chữ mà toàn nội dung lọc hết thì không gửi; forward giữ caption gốc nên có thể bỏ qua nếu caption toàn QC/cờ bạc. Tắt lọc: env \`COPY_POLICY_FILTER=0\`.
 
 **Commands - Forward (Chuyển tiếp tự động):**
 /setforward [groupA] [groupB] [trigger] - Thiết lập auto-forward
@@ -811,15 +909,13 @@ class BankTransactionUserbot {
 /id - Xem ID nhóm hiện tại
 /id (reply) - Xem ID của user được reply
 /groups - Xem danh sách groups bot tham gia (admin only)
+/pic2 - Hướng dẫn Pic2 (admin, xem thêm mục Pic2 phía trên)
+/copyall - Copy lịch sử từ nguồn vào nhóm này (admin)
+/newcopy - Copy tin mới sau watermark (admin)
 /help - Hiển thị hướng dẫn này
 
-**Ví dụ Pic2:**
-/pic2 on -1001234567890 @username Xin chào!
-/pic2 on -1001234567890 123456789 Hello world!
-
-⚠️ **Lưu ý:** 
-- Bot chỉ reply tin nhắn có đầy đủ thông tin giao dịch
-- Pic2 chỉ hoạt động khi user gửi hình ảnh (không phải sticker)
+⚠️ **Lưu ý chung:** 
+- Bot chỉ reply tin nhắn có đầy đủ thông tin giao dịch (chế độ /1)
 - Auto-forward hỗ trợ albums (nhiều ảnh/video cùng lúc)
 - Emoji triggers: 📋🔄⭐🎯💫🚀📤📥💬📸
     `.trim();
@@ -831,16 +927,27 @@ class BankTransactionUserbot {
   async handlePic2Command(args, chatId, messageId) {
     if (args.length === 0) {
       const helpText = `
-📸 **Pic2 Command Usage**
+📸 **Pic2** (👑 admin — auto reply khi user gửi **ảnh**)
 
-/pic2 on [groupId] [userId/username] [message] - Bật auto reply hình ảnh
-/pic2 off [groupId] - Tắt auto reply hình ảnh
-/pic2 list - Xem danh sách settings hiện tại
+Mỗi \`/pic2 on\` **thêm** rule mới trong nhóm (không ghi đè). Sau khi thêm, bot gửi \`Rule ID\` — giữ để xóa từng rule.
 
-**Ví dụ:**
+**Lệnh**
+/pic2 on [groupId] [userId hoặc @username] [nội dung reply]
+/pic2 list  |  /pic2 list [groupId]
+/pic2 off [groupId]  hoặc  /pic2 off all [groupId]  → xóa hết rule nhóm
+/pic2 off [groupId] [ruleId]  → xóa một rule
+/pic2 off [groupId] [số]  → xóa theo # trong list (1, 2, …)
+
+**Ví dụ**
 /pic2 on -1001234567890 @username Hello world!
 /pic2 on -1001234567890 123456789 Xin chào!
-/pic2 off -1001234567890
+/pic2 list
+/pic2 list -1001234567890
+/pic2 off -1001234567890 a1b2c3d4
+/pic2 off -1001234567890 1
+/pic2 off all -1001234567890
+
+**Ghi chú:** Không tính sticker. Nhiều rule cùng user → rule **đầu tiên** trong list được dùng (một reply / một ảnh).
       `.trim();
       
       await this.sendReply(chatId, messageId, helpText);
@@ -859,11 +966,11 @@ class BankTransactionUserbot {
         break;
       
       case 'list':
-        await this.handlePic2ListCommand(chatId, messageId);
+        await this.handlePic2ListCommand(args.slice(1), chatId, messageId);
         break;
       
       default:
-        await this.sendReply(chatId, messageId, '❗ Sử dụng: /pic2 on/off/list');
+        await this.sendReply(chatId, messageId, '❗ Gõ /pic2 để xem hướng dẫn, hoặc: /pic2 on | off | list');
     }
   }
 
@@ -904,21 +1011,31 @@ class BankTransactionUserbot {
       if (!this.settings.pic2Settings) {
         this.settings.pic2Settings = {};
       }
+      Utils.normalizePic2Settings(this.settings);
+      if (!this.settings.pic2Settings[groupId]) {
+        this.settings.pic2Settings[groupId] = [];
+      }
+      const rules = this.settings.pic2Settings[groupId];
+      if (!Array.isArray(rules)) {
+        await this.sendReply(chatId, messageId, '❌ Cấu hình pic2 group bị lỗi định dạng');
+        return;
+      }
 
-      // Save settings
-      this.settings.pic2Settings[groupId] = {
+      const ruleId = Utils.newPic2RuleId();
+      rules.push({
+        id: ruleId,
         enabled: true,
         targetUser: targetUser,
         replyMessage: replyMessage
-      };
+      });
 
       Utils.saveSettings(this.settings);
       
       const userDisplay = targetUser.startsWith('@') ? targetUser : `ID: ${targetUser}`;
-      const successMsg = `✅ Đã BẬT pic2 cho:\n📋 Group: \`${groupId}\`\n👤 User: ${userDisplay}\n💬 Message: "${replyMessage}"`;
+      const successMsg = `✅ Đã thêm rule pic2:\n📋 Group: \`${groupId}\`\n🆔 Rule ID: \`${ruleId}\`\n👤 User: ${userDisplay}\n💬 Message: "${replyMessage}"`;
       
       await this.sendReply(chatId, messageId, successMsg);
-      Utils.log(`🟢 Pic2 BẬT cho group ${groupId}, user ${targetUser}`);
+      Utils.log(`🟢 Pic2 thêm rule ${ruleId} cho group ${groupId}, user ${targetUser}`);
 
     } catch (error) {
       Utils.log(`❌ Lỗi khi bật pic2: ${error.message}`);
@@ -929,36 +1046,76 @@ class BankTransactionUserbot {
   // Xử lý /pic2 off
   async handlePic2OffCommand(args, chatId, messageId) {
     if (args.length < 1) {
-      await this.sendReply(chatId, messageId, '❗ Sử dụng: /pic2 off [groupId]');
+      await this.sendReply(chatId, messageId, '❗ Sử dụng: /pic2 off [groupId] | /pic2 off all [groupId] | /pic2 off [groupId] [ruleId|số]');
       return;
     }
 
-    const groupId = args[0];
-
     try {
-      // Validate groupId
+      if (!this.settings.pic2Settings) {
+        this.settings.pic2Settings = {};
+      }
+      Utils.normalizePic2Settings(this.settings);
+
+      const isAll = args[0].toLowerCase() === 'all';
+      let groupId;
+      let selector;
+
+      if (isAll) {
+        if (args.length < 2) {
+          await this.sendReply(chatId, messageId, '❗ Sử dụng: /pic2 off all [groupId]');
+          return;
+        }
+        groupId = args[1];
+      } else {
+        groupId = args[0];
+        selector = args.length >= 2 ? args[1] : null;
+      }
+
       if (!groupId.match(/^-?\d+$/)) {
         await this.sendReply(chatId, messageId, '❌ Group ID không hợp lệ (phải là số)');
         return;
       }
 
-      // Initialize pic2Settings if not exists
-      if (!this.settings.pic2Settings) {
-        this.settings.pic2Settings = {};
+      const rules = this.settings.pic2Settings[groupId];
+      const hasRules = Array.isArray(rules) && rules.length > 0;
+
+      if (isAll || selector === null) {
+        if (!hasRules) {
+          await this.sendReply(chatId, messageId, `❌ Không tìm thấy cấu hình pic2 cho group: \`${groupId}\``);
+          return;
+        }
+        delete this.settings.pic2Settings[groupId];
+        Utils.saveSettings(this.settings);
+        await this.sendReply(chatId, messageId, `✅ Đã xóa toàn bộ pic2 cho group: \`${groupId}\``);
+        Utils.log(`🔴 Pic2 xóa hết cho group ${groupId}`);
+        return;
       }
 
-      // Check if settings exists
-      if (!this.settings.pic2Settings[groupId]) {
+      if (!hasRules) {
         await this.sendReply(chatId, messageId, `❌ Không tìm thấy cấu hình pic2 cho group: \`${groupId}\``);
         return;
       }
 
-      // Remove settings
-      delete this.settings.pic2Settings[groupId];
+      let idx = rules.findIndex((r) => r.id === selector);
+      if (idx === -1 && /^\d+$/.test(selector)) {
+        const n = parseInt(selector, 10);
+        if (n >= 1 && n <= rules.length) {
+          idx = n - 1;
+        }
+      }
+
+      if (idx === -1) {
+        await this.sendReply(chatId, messageId, `❌ Không tìm thấy rule \`${selector}\` trong group \`${groupId}\``);
+        return;
+      }
+
+      rules.splice(idx, 1);
+      if (rules.length === 0) {
+        delete this.settings.pic2Settings[groupId];
+      }
       Utils.saveSettings(this.settings);
-      
-      await this.sendReply(chatId, messageId, `✅ Đã TẮT pic2 cho group: \`${groupId}\``);
-      Utils.log(`🔴 Pic2 TẮT cho group ${groupId}`);
+      await this.sendReply(chatId, messageId, `✅ Đã xóa rule pic2 trong group: \`${groupId}\``);
+      Utils.log(`🔴 Pic2 xóa rule tại index ${idx} cho group ${groupId}`);
 
     } catch (error) {
       Utils.log(`❌ Lỗi khi tắt pic2: ${error.message}`);
@@ -966,24 +1123,55 @@ class BankTransactionUserbot {
     }
   }
 
-  // Xử lý /pic2 list
-  async handlePic2ListCommand(chatId, messageId) {
+  // Xử lý /pic2 list [groupId]
+  async handlePic2ListCommand(listArgs, chatId, messageId) {
     try {
+      if (Utils.normalizePic2Settings(this.settings)) {
+        Utils.saveSettings(this.settings);
+      }
+
       if (!this.settings.pic2Settings || Object.keys(this.settings.pic2Settings).length === 0) {
         await this.sendReply(chatId, messageId, '📝 Chưa có cấu hình pic2 nào');
         return;
       }
 
+      let entries = Object.entries(this.settings.pic2Settings);
+      if (listArgs.length >= 1) {
+        const filterGid = listArgs[0];
+        if (!filterGid.match(/^-?\d+$/)) {
+          await this.sendReply(chatId, messageId, '❌ Group ID không hợp lệ (phải là số)');
+          return;
+        }
+        entries = entries.filter(([g]) => g === filterGid);
+        if (entries.length === 0) {
+          await this.sendReply(chatId, messageId, `📝 Không có rule pic2 cho group \`${filterGid}\``);
+          return;
+        }
+      }
+
       let listMsg = '📸 **Danh sách Pic2 Settings**\n\n';
-      
-      for (const [groupId, config] of Object.entries(this.settings.pic2Settings)) {
-        const status = config.enabled ? '🟢 BẬT' : '🔴 TẮT';
-        const userDisplay = config.targetUser.startsWith('@') ? config.targetUser : `ID: ${config.targetUser}`;
-        
+      let listedAny = false;
+
+      for (const [groupId, rules] of entries) {
+        if (!Array.isArray(rules) || rules.length === 0) {
+          continue;
+        }
+        listedAny = true;
         listMsg += `**Group:** \`${groupId}\`\n`;
-        listMsg += `**Status:** ${status}\n`;
-        listMsg += `**User:** ${userDisplay}\n`;
-        listMsg += `**Message:** "${config.replyMessage}"\n\n`;
+        rules.forEach((config, i) => {
+          const status = config.enabled ? '🟢 BẬT' : '🔴 TẮT';
+          const userDisplay = config.targetUser.startsWith('@') ? config.targetUser : `ID: ${config.targetUser}`;
+          const rid = config.id || '(no id)';
+          listMsg += `  **#${i + 1}** id: \`${rid}\` ${status}\n`;
+          listMsg += `  **User:** ${userDisplay}\n`;
+          listMsg += `  **Message:** "${config.replyMessage}"\n`;
+        });
+        listMsg += '\n';
+      }
+
+      if (!listedAny) {
+        await this.sendReply(chatId, messageId, '📝 Chưa có cấu hình pic2 nào');
+        return;
       }
 
       await this.sendReply(chatId, messageId, listMsg.trim());
@@ -1869,8 +2057,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
   async getMediaGroupMessages(chatId, groupedId, aroundMessageId) {
     try {
       // Check if groupedId is valid
-      if (!groupedId) {
-        Utils.log(`❌ Invalid groupedId: ${groupedId}`);
+      if (groupedId === undefined || groupedId === null) {
+        Utils.log(`⚠️ Bỏ qua gom album: groupedId rỗng (${groupedId})`);
         return [];
       }
 
@@ -1898,11 +2086,452 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     }
   }
 
+  // ================= COPYALL / NEWCOPY (bulk) =================
+
+  parseFloodWaitSeconds(error) {
+    if (!error) return null;
+    if (typeof error.seconds === 'number') return error.seconds;
+    const msg = String(error.errorMessage || error.message || '');
+    const m = /FLOOD_WAIT_(\d+)/i.exec(msg);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  async invokeFloodSafe(fn, context = 'request') {
+    for (let attempt = 0; attempt < 25; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        const sec = this.parseFloodWaitSeconds(e);
+        if (sec != null && sec >= 0) {
+          Utils.log(`⏳ FloodWait ${sec}s (${context}), thử lại...`);
+          await new Promise((r) => setTimeout(r, (sec + 1) * 1000));
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new Error(`Quá nhiều FloodWait khi ${context}`);
+  }
+
+  isServiceMessage(msg) {
+    if (!msg) return true;
+    if (msg.className === 'MessageService') return true;
+    if (msg.action != null && !msg.media && !(msg.message || msg.text)) return true;
+    return false;
+  }
+
+  getAlbumMaxId(msg, pool) {
+    if (msg.groupedId == null) return msg.id;
+    const g = String(msg.groupedId);
+    let max = msg.id;
+    for (const m of pool) {
+      if (m.groupedId != null && String(m.groupedId) === g) {
+        if (m.id > max) max = m.id;
+      }
+    }
+    return max;
+  }
+
+  async collectCopyallMessages(sourcePeer, minDateSec, maxCollect) {
+    const buf = [];
+    if (typeof this.client.iterMessages === 'function') {
+      for await (const msg of this.client.iterMessages(sourcePeer, {
+        limit: maxCollect,
+      })) {
+        if (msg.date < minDateSec) break;
+        buf.push(msg);
+        if (buf.length >= maxCollect) break;
+      }
+      buf.reverse();
+      return buf;
+    }
+
+    let offsetId = 0;
+    while (buf.length < maxCollect) {
+      const batch = await this.invokeFloodSafe(
+        () => this.client.getMessages(sourcePeer, { limit: 100, offsetId }),
+        'getMessages copyall'
+      );
+      if (!batch || batch.length === 0) break;
+      let allOlder = true;
+      for (const msg of batch) {
+        if (msg.date >= minDateSec) {
+          allOlder = false;
+          buf.push(msg);
+          if (buf.length >= maxCollect) break;
+        }
+      }
+      if (allOlder) break;
+      const minBatchId = Math.min(...batch.map((m) => m.id));
+      if (minBatchId === offsetId && offsetId !== 0) break;
+      offsetId = minBatchId;
+      if (batch.length < 100) break;
+    }
+    buf.sort((a, b) => a.id - b.id);
+    return buf;
+  }
+
+  async collectNewcopyMessages(sourcePeer, watermark, maxCollect) {
+    const buf = [];
+    const wm = Number(watermark) || 0;
+    if (typeof this.client.iterMessages === 'function') {
+      for await (const msg of this.client.iterMessages(sourcePeer, {
+        minId: wm,
+        limit: maxCollect,
+      })) {
+        buf.push(msg);
+        if (buf.length >= maxCollect) break;
+      }
+      return this._finalizeNewcopyBuffer(buf, wm);
+    }
+
+    let offsetId = 0;
+    while (buf.length < maxCollect) {
+      const batch = await this.invokeFloodSafe(
+        () =>
+          this.client.getMessages(sourcePeer, {
+            limit: 100,
+            offsetId,
+            minId: wm,
+          }),
+        'getMessages newcopy'
+      );
+      if (!batch || batch.length === 0) break;
+      for (const msg of batch) {
+        if (msg.id > wm) buf.push(msg);
+      }
+      const minBatchId = Math.min(...batch.map((m) => m.id));
+      if (minBatchId === offsetId && offsetId !== 0) break;
+      offsetId = minBatchId;
+      if (batch.length < 100) break;
+    }
+    return this._finalizeNewcopyBuffer(buf, wm);
+  }
+
+  _finalizeNewcopyBuffer(buf, wm) {
+    const seen = new Set();
+    const out = [];
+    for (const m of buf) {
+      if (m.id <= wm || seen.has(m.id)) continue;
+      seen.add(m.id);
+      out.push(m);
+    }
+    out.sort((a, b) => a.id - b.id);
+    return out;
+  }
+
+  buildCopyLogicalList(sortedMessages) {
+    const seenAlbum = new Set();
+    const out = [];
+    let skipped = 0;
+    for (const msg of sortedMessages) {
+      if (this.isServiceMessage(msg)) {
+        skipped++;
+        continue;
+      }
+      if (msg.groupedId != null) {
+        const g = String(msg.groupedId);
+        if (seenAlbum.has(g)) {
+          skipped++;
+          continue;
+        }
+        seenAlbum.add(g);
+      }
+      out.push(msg);
+    }
+    return { logical: out, skippedServiceOrAlbumDup: skipped };
+  }
+
+  async runBulkCopyJob({
+    sourcePeer,
+    destPeer,
+    sortedMessages,
+    watermarkKey,
+    maxCopy,
+    delayMs,
+    progressEvery,
+    progressMsgId,
+  }) {
+    const { logical, skippedServiceOrAlbumDup } = this.buildCopyLogicalList(sortedMessages);
+    let copied = 0;
+    let failed = 0;
+    let skippedUnsupported = 0;
+    let skippedPolicy = 0;
+    let watermark = Number(this.settings.copyAllWatermark[watermarkKey]) || 0;
+
+    const slice = logical.slice(0, maxCopy);
+    const hitCap = logical.length > maxCopy;
+
+    for (let i = 0; i < slice.length; i++) {
+      const msg = slice[i];
+      if (!Utils.canCopyMessage(msg)) {
+        skippedUnsupported++;
+        watermark = Math.max(watermark, this.getAlbumMaxId(msg, sortedMessages));
+        continue;
+      }
+      try {
+        const result = await this.invokeFloodSafe(
+          () => this.copyMessage(msg, destPeer),
+          'copyMessage'
+        );
+        if (result && result.success) {
+          if (result.skippedPolicy) {
+            skippedPolicy++;
+          } else {
+            copied++;
+          }
+          watermark = Math.max(
+            watermark,
+            this.getAlbumMaxId(msg, sortedMessages)
+          );
+        } else {
+          failed++;
+        }
+      } catch (e) {
+        Utils.log(`❌ Bulk copy lỗi tại msg ${msg.id}: ${e.message}`);
+        failed++;
+      }
+
+      if (
+        progressMsgId &&
+        (copied + failed + skippedUnsupported + skippedPolicy) % progressEvery === 0
+      ) {
+        try {
+          await this.client.editMessage(destPeer, {
+            message: progressMsgId,
+            text:
+            `📋 Đang copy…\n` +
+            `Đã gửi: ${copied} | Lỗi: ${failed} | Bỏ qua: ${skippedUnsupported} | QC/cờ bạc: ${skippedPolicy}\n` +
+            `Tiến độ: ${i + 1}/${slice.length}`,
+          });
+        } catch (e) {
+          Utils.log(`⚠️ Không sửa được tin tiến độ: ${e.message}`);
+        }
+      }
+
+      if (delayMs > 0) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+
+    this.settings.copyAllWatermark[watermarkKey] = watermark;
+    Utils.saveSettings(this.settings);
+
+    return {
+      copied,
+      failed,
+      skippedUnsupported,
+      skippedPolicy,
+      skippedServiceOrAlbumDup,
+      hitCap,
+      totalLogical: logical.length,
+      watermark,
+    };
+  }
+
+  async handleCopyAllCommand(args, chatId, messageId, originalMessage) {
+    const parsedArgs = Utils.parseCopyallArgs(args);
+    if (parsedArgs.error) {
+      await this.sendReply(chatId, messageId, `❌ ${parsedArgs.error}`);
+      return;
+    }
+    const timeParsed = Utils.parseCopyTimeArg(parsedArgs.timeArg);
+    if (timeParsed.error) {
+      await this.sendReply(chatId, messageId, `❌ ${timeParsed.error}`);
+      return;
+    }
+
+    const sourceId = parsedArgs.sourceId;
+    const destId = chatId.toString();
+    const key = Utils.makeCopyWatermarkKey(sourceId, destId);
+
+    try {
+      await this.client.getEntity(sourceId);
+    } catch (e) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        `❌ Không truy cập được nguồn \`${sourceId}\`: ${e.message}`
+      );
+      return;
+    }
+
+    const MAX_COLLECT = Math.max(1, Number(config.copyAllMaxCollect) || 5000);
+    const MAX_COPY = Math.max(1, Number(config.copyAllMaxCopy) || 3000);
+    const DELAY_MS = 150;
+    const PROGRESS_EVERY = 25;
+
+    const startMsg = await this.client.sendMessage(chatId, {
+      message:
+        `📋 Copyall nguồn \`${sourceId}\` → nhóm này\n` +
+        `Mốc: ${parsedArgs.timeArg} (date ≥ ${timeParsed.minDateSec})\n` +
+        `Đang thu thập tin (tối đa ${MAX_COLLECT})…`,
+      replyTo: messageId,
+    });
+
+    (async () => {
+      try {
+        const sourcePeer = await this.client.getEntity(sourceId);
+        const raw = await this.collectCopyallMessages(
+          sourcePeer,
+          timeParsed.minDateSec,
+          MAX_COLLECT
+        );
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text:
+            `📋 Thu được ${raw.length} tin trong phạm vi. Đang copy (tối đa ${MAX_COPY}/lần)…`,
+        });
+
+        const summary = await this.runBulkCopyJob({
+          sourcePeer,
+          destPeer: chatId,
+          sortedMessages: raw,
+          watermarkKey: key,
+          maxCopy: MAX_COPY,
+          delayMs: DELAY_MS,
+          progressEvery: PROGRESS_EVERY,
+          progressMsgId: startMsg.id,
+        });
+
+        const capNote = summary.hitCap
+          ? `\n⚠️ Còn tin chưa copy — dùng /newcopy cùng id nguồn (không chạy lại /copyall cùng mốc để tránh trùng).`
+          : '';
+
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text:
+            `✅ Copyall xong\n` +
+            `Đã gửi: ${summary.copied} | Lỗi: ${summary.failed} | Không hỗ trợ: ${summary.skippedUnsupported} | QC/cờ bạc: ${summary.skippedPolicy}\n` +
+            `Bỏ qua (service/trùng album): ${summary.skippedServiceOrAlbumDup}\n` +
+            `Watermark: \`${summary.watermark}\`${capNote}`,
+        });
+      } catch (e) {
+        Utils.log(`❌ copyall job: ${e.message}`);
+        try {
+          await this.client.editMessage(chatId, {
+            message: startMsg.id,
+            text: `❌ Copyall lỗi: ${e.message}`,
+          });
+        } catch (e2) {
+          Utils.log(`❌ ${e2.message}`);
+        }
+      }
+    })();
+  }
+
+  async handleNewCopyCommand(args, chatId, messageId, originalMessage) {
+    if (!args || args.length < 1) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ Dùng: /newcopy [id nguồn nhóm/kênh]'
+      );
+      return;
+    }
+    const sourceId = args[0].trim();
+    if (!/^-?\d+$/.test(sourceId)) {
+      await this.sendReply(chatId, messageId, '❌ ID nguồn phải là số');
+      return;
+    }
+    const destId = chatId.toString();
+    const key = Utils.makeCopyWatermarkKey(sourceId, destId);
+    const prev = Number(this.settings.copyAllWatermark[key]) || 0;
+
+    if (prev <= 0) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        `❌ Chưa có watermark cho cặp nguồn/đích này. Chạy **/copyall** trước.`
+      );
+      return;
+    }
+
+    try {
+      await this.client.getEntity(sourceId);
+    } catch (e) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        `❌ Không truy cập được nguồn \`${sourceId}\`: ${e.message}`
+      );
+      return;
+    }
+
+    const MAX_COLLECT = Math.max(1, Number(config.copyAllMaxCollect) || 5000);
+    const MAX_COPY = Math.max(1, Number(config.copyAllMaxCopy) || 3000);
+    const DELAY_MS = 150;
+    const PROGRESS_EVERY = 25;
+
+    const startMsg = await this.client.sendMessage(chatId, {
+      message:
+        `📋 Newcopy nguồn \`${sourceId}\` → nhóm này\n` +
+        `Sau message id \`${prev}\`…`,
+      replyTo: messageId,
+    });
+
+    (async () => {
+      try {
+        const sourcePeer = await this.client.getEntity(sourceId);
+        const raw = await this.collectNewcopyMessages(
+          sourcePeer,
+          prev,
+          MAX_COLLECT
+        );
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text:
+            `📋 Có ${raw.length} tin mới. Đang copy (tối đa ${MAX_COPY}/lần)…`,
+        });
+
+        const summary = await this.runBulkCopyJob({
+          sourcePeer,
+          destPeer: chatId,
+          sortedMessages: raw,
+          watermarkKey: key,
+          maxCopy: MAX_COPY,
+          delayMs: DELAY_MS,
+          progressEvery: PROGRESS_EVERY,
+          progressMsgId: startMsg.id,
+        });
+
+        const capNote = summary.hitCap
+          ? `\n⚠️ Còn tin — chạy lại /newcopy ${sourceId}.`
+          : '';
+
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text:
+            `✅ Newcopy xong\n` +
+            `Đã gửi: ${summary.copied} | Lỗi: ${summary.failed} | Không hỗ trợ: ${summary.skippedUnsupported} | QC/cờ bạc: ${summary.skippedPolicy}\n` +
+            `Watermark: \`${summary.watermark}\`${capNote}`,
+        });
+      } catch (e) {
+        Utils.log(`❌ newcopy job: ${e.message}`);
+        try {
+          await this.client.editMessage(chatId, {
+            message: startMsg.id,
+            text: `❌ Newcopy lỗi: ${e.message}`,
+          });
+        } catch (e2) {
+          Utils.log(`❌ ${e2.message}`);
+        }
+      }
+    })();
+  }
+
   // Copy tin nhạn đa dạng
   async copyMessage(originalMessage, destChatId) {
     try {
-      const messageText = originalMessage.message || originalMessage.text || '';
-      
+      const rawText = originalMessage.message || originalMessage.text || '';
+
+      if (Utils.shouldSkipTextOnlyCopyDueToPolicy(originalMessage)) {
+        Utils.log('⏭️ Bỏ qua copy: tin chỉ chữ — nội dung QC/cờ bạc đã lọc hết');
+        return { success: true, skippedPolicy: true };
+      }
+
+      const messageText = Utils.sanitizeCopyText(rawText);
+
       // ========== HANDLE MEDIA GROUPS (ALBUMS) ==========
       if (Utils.isMediaGroup(originalMessage)) {
         Utils.log(`📸 Detecting media group (album), getting all messages...`);
@@ -1942,6 +2571,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
               }
             }
           }
+
+          albumCaption = Utils.sanitizeCopyText(albumCaption);
           
           if (mediaFiles.length > 0) {
             try {
@@ -1960,6 +2591,10 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
               Utils.log(`❌ True album send failed, trying forwardMessages method: ${albumError.message}`);
               
               try {
+                if (Utils.shouldSkipForwardDueToCopyPolicy(originalMessage)) {
+                  Utils.log('⏭️ Bỏ qua forward album: caption gốc là QC/cờ bạc');
+                  return { success: true, skippedPolicy: true, albumSize: groupMessages.length };
+                }
                 // Method 2: Forward entire album as a group (preserves album structure)
                 const messageIds = groupMessages.map(msg => msg.id);
                 
@@ -2046,7 +2681,10 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
             break;
             
           default:
-            // Fallback: Forward tin nhắn nếu không copy được
+            if (Utils.shouldSkipForwardDueToCopyPolicy(originalMessage)) {
+              Utils.log('⏭️ Bỏ qua forward: caption gốc là QC/cờ bạc');
+              return { success: true, skippedPolicy: true };
+            }
             await this.client.forwardMessages(destChatId, {
               messages: [originalMessage.id],
               fromPeer: originalMessage.chatId
@@ -2056,7 +2694,10 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         return { success: true };
       }
       
-      // Nếu không thể copy, thử forward
+      if (Utils.shouldSkipForwardDueToCopyPolicy(originalMessage)) {
+        Utils.log('⏭️ Bỏ qua forward: caption gốc là QC/cờ bạc');
+        return { success: true, skippedPolicy: true };
+      }
       await this.client.forwardMessages(destChatId, {
         messages: [originalMessage.id],
         fromPeer: originalMessage.chatId
@@ -2081,10 +2722,14 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       }
 
       const chatId = message.chatId.toString();
-      const pic2Config = this.settings.pic2Settings[chatId];
+      const raw = this.settings.pic2Settings[chatId];
+      const rules = Array.isArray(raw)
+        ? raw
+        : raw && typeof raw === 'object' && raw.targetUser != null
+          ? [raw]
+          : [];
 
-      // Kiểm tra có config cho group này không
-      if (!pic2Config || !pic2Config.enabled) {
+      if (rules.length === 0) {
         return;
       }
 
@@ -2099,8 +2744,10 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         return;
       }
 
-      // Kiểm tra có phải target user không
-      if (!Utils.isTargetUser(sender, pic2Config.targetUser)) {
+      const pic2Config = rules.find(
+        (r) => r && r.enabled && Utils.isTargetUser(sender, r.targetUser)
+      );
+      if (!pic2Config) {
         return;
       }
 

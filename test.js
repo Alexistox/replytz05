@@ -61,6 +61,29 @@ Lúc: 2025-07-20 11:10:22`,
     name: 'Tin nhắn KHÔNG hợp lệ - tin nhắn ngẫu nhiên',
     message: `Chào bạn! Hôm nay thế nào?`,
     expected: false
+  },
+  {
+    name: 'Tin nhắn giao dịch hợp lệ (tiếng Trung)',
+    message: `入款：+2,000.00元
+账户：6222****1234
+时间：2025-07-20 11:10:22
+备注：张三转账`,
+    expected: true
+  },
+  {
+    name: 'Tin nhắn giao dịch hợp lệ (tiếng Trung — ngày kiểu 年月日)',
+    message: `入款：5000元
+账户：1234567890
+时间：2025年07月20日 11:10:22
+备注：货款`,
+    expected: true
+  },
+  {
+    name: 'Tin nhắn KHÔNG hợp lệ (tiếng Trung - thiếu 备注)',
+    message: `入款：100元
+账户：12345678
+时间：2025-01-01 09:00:00`,
+    expected: false
   }
 ];
 

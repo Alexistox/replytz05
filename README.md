@@ -95,6 +95,9 @@ npm run linux:run-24-7
 
 📋 **Hướng dẫn Linux đầy đủ**: Xem [LINUX-SETUP.md](LINUX-SETUP.md)
 
+#### Docker
+Xem [DOCKER.md](./DOCKER.md): `docker compose build` và `docker compose up -d` (volume `config.js`, `settings.json`).
+
 ## 📱 Sử dụng
 
 ### Commands chính

@@ -5,19 +5,20 @@ module.exports = {
   // 2. Đăng nhập bằng số điện thoại Telegram
   // 3. Tạo ứng dụng mới
   // 4. Copy api_id và api_hash vào đây
-  apiId: 'YOUR_API_ID',        // Ví dụ: 1234567
-  apiHash: 'YOUR_API_HASH',    // Ví dụ: 'abcd1234efgh5678ijkl9012mnop3456'
-  
-  // Số điện thoại Telegram (với mã quốc gia)
-  // ⚠️  Quan trọng: Phải có dấu '+' và mã quốc gia
-  phoneNumber: 'YOUR_PHONE_NUMBER',  // Ví dụ: '+84901234567'
-  
-  // Session string (sẽ được tạo tự động sau lần đăng nhập đầu tiên)
+  // Docker: có thể đặt TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE_NUMBER trong docker-compose.yml
+  apiId: process.env.TELEGRAM_API_ID || 'YOUR_API_ID',
+  apiHash: process.env.TELEGRAM_API_HASH || 'YOUR_API_HASH',
+  phoneNumber: process.env.TELEGRAM_PHONE_NUMBER || 'YOUR_PHONE_NUMBER',
+
+  sessionFile: process.env.TELEGRAM_SESSION_FILE || './telegram.session',
   sessionString: '',
   
   // Đường dẫn file settings
   settingsFile: './settings.json',
-  
+
+  copyAllMaxCollect: parseInt(process.env.COPYALL_MAX_COLLECT || '5000', 10),
+  copyAllMaxCopy: parseInt(process.env.COPYALL_MAX_COPY || '3000', 10),
+
   // Cấu hình mặc định
   defaultSettings: {
     replyEnabled: false,        // Mặc định TẮT chức năng reply

@@ -16,7 +16,11 @@
     "linux:push": "./push.sh",
     "linux:first-login": "./first-login.sh",
     "linux:run-24-7": "./run-24-7.sh",
-    "linux:run": "./run.sh"
+    "linux:run": "./run.sh",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up -d",
+    "docker:logs": "docker compose logs -f replytz-userbot",
+    "docker:down": "docker compose down"
   },
   "dependencies": {
     "telegram": "^2.22.2",
