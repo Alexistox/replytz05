@@ -17,6 +17,7 @@ class BankTransactionUserbot {
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
+    this.migrateCalToGlobal();
     this.migratePic2Settings();
     this.migrateCopyAllWatermark();
     
@@ -41,6 +42,32 @@ class BankTransactionUserbot {
       Utils.saveSettings(this.settings);
       Utils.log('✅ Đã migrate settings sang format mới (group-specific)');
     }
+  }
+
+  /** /cal từng nhóm (cũ) → calEnabled toàn cục ở root settings */
+  migrateCalToGlobal() {
+    if (this.settings.hasOwnProperty('calEnabled')) {
+      return;
+    }
+    let anyOn = false;
+    const gs = this.settings.groupSettings;
+    if (gs && typeof gs === 'object') {
+      for (const id of Object.keys(gs)) {
+        const g = gs[id];
+        if (g && g.calEnabled === true) {
+          anyOn = true;
+        }
+        if (g && Object.prototype.hasOwnProperty.call(g, 'calEnabled')) {
+          const { calEnabled: _drop, ...rest } = g;
+          gs[id] = Object.keys(rest).length ? rest : { replyEnabled: !!g.replyEnabled };
+        }
+      }
+    }
+    this.settings.calEnabled = anyOn;
+    Utils.saveSettings(this.settings);
+    Utils.log(
+      `✅ Đã migrate /cal sang toàn bot (calEnabled=${anyOn}); đã bỏ calEnabled trong groupSettings`
+    );
   }
 
   migratePic2Settings() {
@@ -350,9 +377,24 @@ class BankTransactionUserbot {
         await this.checkAutoForwardMessage(message);
       }
 
-      // Kiểm tra nếq chức năng reply đã bật cho group này
       const groupId = chatId.toString();
       const groupSettings = this.settings.groupSettings?.[groupId] || { replyEnabled: false };
+
+      // Máy tính /cal toàn bot (độc lập reply giao dịch; chỉ kết quả + quote tin gốc)
+      if (this.settings.calEnabled && messageText.trim() && !Utils.isTransactionMessage(messageText)) {
+        const calBlocked =
+          this.settings.calAdminOnly === true && !this.isOwnerOrAdmin(message);
+        if (!calBlocked) {
+          const calResult = Utils.tryEvaluateCal(messageText);
+          if (calResult.ok) {
+            this.processedMessages.set(messageKey, currentTime);
+            await this.sendReply(chatId, messageId, calResult.text);
+            return;
+          }
+        }
+      }
+
+      // Kiểm tra nếu chức năng reply đã bật cho group này
       if (!groupSettings.replyEnabled) return;
 
       // Kiểm tra xem có phải tin nhắn giao dịch không
@@ -604,17 +646,46 @@ class BankTransactionUserbot {
         await this.handleStatusCommand(chatId, messageId);
         break;
       
-      case '/help':
-        await this.handleHelpCommand(chatId, messageId);
+      case '/help2':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleHelp2Command(chatId, messageId);
         break;
-      
+
+      // /help 2 (có khoảng trắng) — tương đương /help2
+      case '/help':
+        if (args[0] === '2' || (args.length === 1 && String(args[0]).trim() === '2')) {
+          if (!this.isOwnerOrAdmin(originalMessage)) {
+            await this.sendReply(
+              chatId,
+              messageId,
+              '❌ Chỉ admin mới có thể sử dụng lệnh này'
+            );
+            return;
+          }
+          await this.handleHelp2Command(chatId, messageId);
+        } else {
+          await this.sendReply(
+            chatId,
+            messageId,
+            'ℹ️ Hướng dẫn đầy đủ (admin): gõ **/help2** hoặc **/help 2**'
+          );
+        }
+        break;
+
       case '/id':
         await this.handleIdCommand(chatId, messageId, originalMessage);
         break;
       
       case '/pic2':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
         await this.handlePic2Command(args, chatId, messageId);
@@ -622,7 +693,7 @@ class BankTransactionUserbot {
       
       case '/setforward':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
         await this.handleSetForwardCommand(args, chatId, messageId, originalMessage);
@@ -630,7 +701,7 @@ class BankTransactionUserbot {
       
       case '/removeforward':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
         await this.handleRemoveForwardCommand(args, chatId, messageId);
@@ -638,7 +709,7 @@ class BankTransactionUserbot {
       
               case '/listforward':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
           await this.handleListForwardCommand(chatId, messageId);
@@ -646,7 +717,7 @@ class BankTransactionUserbot {
       
       case '/setforward2':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
         await this.handleSetForward2Command(args, chatId, messageId, originalMessage);
@@ -654,7 +725,7 @@ class BankTransactionUserbot {
       
       case '/removeforward2':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
         await this.handleRemoveForward2Command(args, chatId, messageId);
@@ -662,14 +733,14 @@ class BankTransactionUserbot {
       
       case '/listforward2':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
         await this.handleListForward2Command(chatId, messageId);
         break;
         case '/groups':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
           await this.handleGroupsCommand(chatId, messageId);
@@ -679,14 +750,14 @@ class BankTransactionUserbot {
           break;
         case '/adlist':
           if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-            await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+            await this.sendReply(chatId, messageId, '');
             return;
           }
           await this.handleAdminListCommand(chatId, messageId);
           break;
         case '/adremove':
           if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-            await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+            await this.sendReply(chatId, messageId, '');
             return;
           }
           await this.handleAdminRemoveCommand(args, chatId, messageId);
@@ -694,7 +765,7 @@ class BankTransactionUserbot {
 
       case '/copyall':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
         await this.handleCopyAllCommand(args, chatId, messageId, originalMessage);
@@ -702,10 +773,47 @@ class BankTransactionUserbot {
 
       case '/newcopy':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          await this.sendReply(chatId, messageId, '');
           return;
         }
         await this.handleNewCopyCommand(args, chatId, messageId, originalMessage);
+        break;
+
+      case '/cal':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleCalCommand(args, chatId, messageId);
+        break;
+
+      // Một số client/ghi nhớ lệnh dính chữ: /calon ≈ /cal on
+      case '/calon':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleCalCommand(['on'], chatId, messageId);
+        break;
+
+      case '/caloff':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleCalCommand(['off'], chatId, messageId);
         break;
     }
   }
@@ -719,9 +827,8 @@ class BankTransactionUserbot {
       this.settings.groupSettings = {};
     }
     
-    // Get current group settings
     const currentGroupSettings = this.settings.groupSettings[groupId] || { replyEnabled: false };
-    
+
     if (args.length === 0) {
       const status = currentGroupSettings.replyEnabled ? 'BẬT' : 'TẮT';
       await this.sendReply(chatId, messageId, `⚙️ Trạng thái reply cho nhóm này: ${status}\nDùng /1 on để bật, /1 off để tắt`);
@@ -729,21 +836,88 @@ class BankTransactionUserbot {
     }
 
     const action = args[0].toLowerCase();
-    
+
     if (action === 'on') {
-      this.settings.groupSettings[groupId] = { replyEnabled: true };
+      this.settings.groupSettings[groupId] = { ...currentGroupSettings, replyEnabled: true };
       Utils.saveSettings(this.settings);
       Utils.log(`🟢 Chức năng reply đã BẬT cho group ${groupId}`);
       await this.sendReply(chatId, messageId, '✅ Đã BẬT chức năng reply giao dịch cho nhóm này');
-      
     } else if (action === 'off') {
-      this.settings.groupSettings[groupId] = { replyEnabled: false };
+      this.settings.groupSettings[groupId] = { ...currentGroupSettings, replyEnabled: false };
       Utils.saveSettings(this.settings);
       Utils.log(`🔴 Chức năng reply đã TẮT cho group ${groupId}`);
       await this.sendReply(chatId, messageId, '❌ Đã TẮT chức năng reply giao dịch cho nhóm này');
-      
     } else {
       await this.sendReply(chatId, messageId, '❗ Sử dụng: /1 on hoặc /1 off');
+    }
+  }
+
+  // /cal on|on admin|off — chỉ admin; toàn bot: mọi nhóm/chat khi calEnabled
+  async handleCalCommand(args, chatId, messageId) {
+    if (typeof this.settings.calEnabled !== 'boolean') {
+      this.settings.calEnabled = false;
+    }
+    if (this.settings.calAdminOnly !== true) {
+      this.settings.calAdminOnly = false;
+    }
+
+    if (args.length === 0) {
+      const calOn = this.settings.calEnabled ? 'BẬT' : 'TẮT';
+      const who =
+        this.settings.calEnabled && this.settings.calAdminOnly
+          ? '**chỉ admin** mới gửi biểu thức được tính'
+          : this.settings.calEnabled
+            ? '**mọi người** gửi biểu thức đều được tính'
+            : '—';
+      await this.sendReply(
+        chatId,
+        messageId,
+        `⚙️ Máy tính (/cal) **toàn bot**: ${calOn}\n${this.settings.calEnabled ? `Chế độ: ${who}.\n` : ''}Áp dụng mọi nhóm/kênh/chat. Hậu tố: k/n = nghìn, tr = triệu, tỷ/ty = tỷ\n**Admin:** /cal on | /cal on admin | /cal off`
+      );
+      return;
+    }
+
+    const action = args[0].toLowerCase();
+    if (action === 'on') {
+      const onlyAdmin = args.length >= 2 && args[1].toLowerCase() === 'admin';
+      if (args.length >= 2 && !onlyAdmin) {
+        await this.sendReply(
+          chatId,
+          messageId,
+          '❗ Sau **on** chỉ hợp lệ: **admin** (vd: `/cal on admin`) — hoặc dùng `/cal on` để mọi người tính được'
+        );
+        return;
+      }
+      this.settings.calEnabled = true;
+      this.settings.calAdminOnly = onlyAdmin;
+      Utils.saveSettings(this.settings);
+      if (onlyAdmin) {
+        Utils.log('🟢 /cal BẬT (toàn bot, chỉ admin)');
+        await this.sendReply(
+          chatId,
+          messageId,
+          '✅ Đã BẬT máy tính **toàn bot** — **chỉ admin** mới gửi biểu thức (vd: 5tr+10k) thì bot trả kết quả. Dùng `/cal on` để cho mọi người tính; `/cal off` để tắt.'
+        );
+      } else {
+        Utils.log('🟢 /cal BẬT (toàn bot, mọi người)');
+        await this.sendReply(
+          chatId,
+          messageId,
+          '✅ Đã BẬT máy tính **toàn bot** (mọi nhóm): mọi người gửi biểu thức (vd: 5tr+10k) — bot trả kết quả + quote tin gốc. `/cal on admin` nếu chỉ muốn admin; `/cal off` để tắt.'
+        );
+      }
+    } else if (action === 'off') {
+      this.settings.calEnabled = false;
+      this.settings.calAdminOnly = false;
+      Utils.saveSettings(this.settings);
+      Utils.log('🔴 /cal TẮT (toàn bot)');
+      await this.sendReply(chatId, messageId, '❌ Đã TẮT máy tính **toàn bot** (mọi nhóm)');
+    } else {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ Dùng: /cal on | /cal on admin | /cal off (hoặc /cal để xem trạng thái)'
+      );
     }
   }
 
@@ -752,15 +926,20 @@ class BankTransactionUserbot {
     const groupId = chatId.toString();
     const groupSettings = this.settings.groupSettings?.[groupId] || { replyEnabled: false };
     const status = groupSettings.replyEnabled ? '🟢 BẬT' : '🔴 TẮT';
+    const calGlobal =
+      this.settings.calEnabled !== true
+        ? '🔴 TẮT'
+        : this.settings.calAdminOnly === true
+          ? '🟢 BẬT (chỉ admin tính)'
+          : '🟢 BẬT (mọi người tính)';
     const uptime = process.uptime();
     const hours = Math.floor(uptime / 3600);
     const minutes = Math.floor((uptime % 3600) / 60);
     
     // Đếm số group đã bật reply
-    const groupReplyCount = this.settings.groupSettings ? 
-      Object.values(this.settings.groupSettings).filter(g => g.replyEnabled).length : 0;
+    const groupReplyCount = this.settings.groupSettings ?
+      Object.values(this.settings.groupSettings).filter((g) => g.replyEnabled).length : 0;
     const groupReplyStatus = groupReplyCount > 0 ? `🟢 ${groupReplyCount} groups` : '🔴 TẮT';
-    
     // Đếm số pic2 rules (tất cả nhóm)
     const pic2RuleCount = Utils.countPic2Rules(this.settings);
     const pic2Status = pic2RuleCount > 0 ? `🟢 ${pic2RuleCount} rules` : '🔴 TẮT';
@@ -787,6 +966,7 @@ class BankTransactionUserbot {
 
 🤖 Bot: Đang hoạt động
 ⚙️ Reply giao dịch (nhóm này): ${status}
+🔢 Máy tính /cal (toàn bot): ${calGlobal}
 🌐 Reply giao dịch (tổng): ${groupReplyStatus}
 💬 Tin nhắn reply: "${this.settings.replyMessage}"
 📸 Pic2 auto reply: ${pic2Status}
@@ -800,6 +980,9 @@ class BankTransactionUserbot {
 📝 Commands:
 /1 on - Bật reply cho nhóm này
 /1 off - Tắt reply cho nhóm này
+/cal on - Bật máy tính toàn bot, mọi người gõ biểu thức (admin) 👑
+/cal on admin - Bật máy tính, chỉ admin gõ biểu thức (admin) 👑
+/cal off - Tắt máy tính toàn bot (admin) 👑
 /status - Xem trạng thái  
 /id - Xem ID chat/user
 /ad - Admin management 👑
@@ -811,7 +994,7 @@ class BankTransactionUserbot {
 /listforward2 - Xem global forward rules 👑
 /copyall - Copy lịch sử vào nhóm này 👑
 /newcopy - Copy tin mới (sau /copyall) 👑
-/help - Hướng dẫn
+/help2 hoặc /help 2 - Hướng dẫn đầy đủ (admin) 👑
 
 👑 = Admin only commands
     `.trim();
@@ -819,8 +1002,8 @@ class BankTransactionUserbot {
     await this.sendReply(chatId, messageId, statusMessage);
   }
 
-  // Xử lý command /help
-  async handleHelpCommand(chatId, messageId) {
+  // Xử lý command /help2 (chỉ admin — kiểm tra trong handleCommand)
+  async handleHelp2Command(chatId, messageId) {
     const helpMessage = `
 🤖 **Bank Transaction UserBot**
 
@@ -829,19 +1012,16 @@ class BankTransactionUserbot {
 2. Tự động reply hình ảnh từ user cụ thể trong group cụ thể
 3. Chuyển tiếp tự động tin nhắn (text, ảnh, video, file, albums) với emoji/text triggers
 
-**Định dạng tin nhắn giao dịch (VN):**
-- Tiền vào: +2,000 đ
-- Tài khoản: 20918031 tại ACB  
-- Lúc: 2025-07-20 11:10:22
-- Nội dung CK: ...
-
-**Định dạng tiếng Trung (đủ 4 dòng: 入款 / 账户 / 时间 / 备注):**
-- 入款：+2,000.00元 · 账户：6222****1234 · 时间：2025-07-20 11:10:22 (hoặc 2025年07月20日 11:10:22) · 备注：…
-
-**Commands - Giao dịch:**
-/1 on - Bật chức năng reply giao dịch cho nhóm này
-/1 off - Tắt chức năng reply giao dịch cho nhóm này
-/1 - Xem trạng thái nhóm hiện tại
+**Commands - Máy tính (/cal, 👑 chỉ admin bật/tắt — toàn bot):**
+/cal on - Bật: **mọi nhóm/kênh** — **mọi người** gửi biểu thức; bot trả **chỉ kết quả** (quote tin gốc)
+/cal on admin - Bật: chỉ **admin** gửi biểu thức mới được tính
+/cal off - Tắt máy tính trên toàn bot
+/cal - Xem trạng thái /cal
+Telegram menu đôi khi gửi \`/cal@TenBot on\` — bot tự bỏ phần \`@...\`.
+/calon — tương đương \`/cal on\` (gõ dính chữ; mọi người tính được)
+/caloff — tương đương \`/cal off\`
+Hậu tố sau số: \`k\` hoặc \`n\` = nghìn, \`tr\` = triệu, \`tỷ\`/\`ty\` = tỷ. Ví dụ: \`5tr+10k\`, \`sqrt(16)+2*3\`
+Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 
 **Commands - Pic2 (auto reply khi gửi ảnh, 👑 admin):**
 /pic2 — Hướng dẫn Pic2 (gõ riêng lệnh này)
@@ -905,6 +1085,7 @@ class BankTransactionUserbot {
 /adremove user_id - Xóa admin
 
 **Commands - Khác:**
+/cal - Máy tính toàn bot (👑 admin: /cal on | /cal on admin | /cal off; xem mục /cal phía trên)
 /status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại
 /id (reply) - Xem ID của user được reply
@@ -912,7 +1093,7 @@ class BankTransactionUserbot {
 /pic2 - Hướng dẫn Pic2 (admin, xem thêm mục Pic2 phía trên)
 /copyall - Copy lịch sử từ nguồn vào nhóm này (admin)
 /newcopy - Copy tin mới sau watermark (admin)
-/help - Hiển thị hướng dẫn này
+/help2 hoặc /help 2 - Hiển thị hướng dẫn này (admin)
 
 ⚠️ **Lưu ý chung:** 
 - Bot chỉ reply tin nhắn có đầy đủ thông tin giao dịch (chế độ /1)
@@ -920,7 +1101,23 @@ class BankTransactionUserbot {
 - Emoji triggers: 📋🔄⭐🎯💫🚀📤📥💬📸
     `.trim();
 
-    await this.sendReply(chatId, messageId, helpMessage);
+    const chunks = Utils.splitTelegramMessageChunks(helpMessage, 4000);
+    for (let p = 0; p < chunks.length; p++) {
+      try {
+        await this.client.sendMessage(chatId, {
+          message: chunks[p],
+          ...(p === 0 ? { replyTo: messageId } : {}),
+        });
+      } catch (error) {
+        Utils.log(
+          `❌ Lỗi gửi /help2 phần ${p + 1}/${chunks.length}: ${error.message}`
+        );
+        break;
+      }
+      if (p < chunks.length - 1) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
   }
 
   // Xử lý command /pic2
@@ -1840,24 +2037,30 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     }
   }
 
-  // Check if user is owner or admin
+  // Check if user is owner or admin (userId: chuỗi ID hoặc object tin nhắn có senderId)
   isOwnerOrAdmin(userId) {
-    if (!userId) return false;
-    
+    let uid = '';
+    if (userId != null && typeof userId === 'object' && 'senderId' in userId) {
+      uid = Utils.getMessageSenderUserId(userId);
+    } else if (userId !== undefined && userId !== null) {
+      uid = String(userId).trim();
+    }
+    if (!uid) return false;
+
     // Check admin list
-    if (Utils.isAdmin(this.settings, userId)) {
+    if (Utils.isAdmin(this.settings, uid)) {
       return true;
     }
     
     // First-time setup: if no admins exist, anyone can become admin
     const adminList = Utils.getAdminList(this.settings);
     if (adminList.length === 0) {
-      Utils.log(`🏃‍♂️ First-time setup: Auto-adding first admin: ${userId}`);
-      Utils.addAdmin(this.settings, userId);
+      Utils.log(`🏃‍♂️ First-time setup: Auto-adding first admin: ${uid}`);
+      Utils.addAdmin(this.settings, uid);
       Utils.saveSettings(this.settings);
       return true;
     }
-    
+
     return false;
   }
 
@@ -2857,7 +3060,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
       this.isRunning = true;
       Utils.log('✅ UserBot đã sẵn sàng hoạt động!');
-      Utils.log('📝 Gõ /help trong bất kỳ chat nào để xem hướng dẫn');
+      Utils.log('📝 Admin: gõ /help2 để xem hướng dẫn đầy đủ');
       Utils.log(`🔄 Duplicate protection: ACTIVE`);
       Utils.log(`📊 Process ID: ${process.pid}`);
 
