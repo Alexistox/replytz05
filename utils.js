@@ -73,6 +73,41 @@ class Utils {
     };
   }
 
+  /** Chuẩn hóa user id (BigInt / Long / số) sang chuỗi so sánh */
+  static normalizeUserId(id) {
+    if (id == null) return '';
+    if (typeof id === 'bigint') return id.toString();
+    if (typeof id === 'number') return String(id);
+    if (typeof id === 'object' && id.userId != null) {
+      return Utils.normalizeUserId(id.userId);
+    }
+    if (typeof id === 'object' && typeof id.valueOf === 'function') {
+      try {
+        const v = id.valueOf();
+        if (v !== id) return Utils.normalizeUserId(v);
+      } catch (_e) {
+        /* ignore */
+      }
+    }
+    const t = String(id).trim();
+    return t && !t.startsWith('[object ') ? t : '';
+  }
+
+  /** Chat id từ Message GramJS (supergroup thường là -100…) */
+  static getMessageChatId(message) {
+    if (!message) return '';
+    const raw = message.chatId ?? message.peerId;
+    if (raw == null) return '';
+    if (typeof raw === 'bigint' || typeof raw === 'number') return raw.toString();
+    if (typeof raw === 'string') return raw.trim();
+    if (typeof raw === 'object') {
+      if (raw.channelId != null) return `-100${Utils.normalizeUserId(raw.channelId)}`;
+      if (raw.chatId != null) return `-${Utils.normalizeUserId(raw.chatId)}`;
+    }
+    const t = String(raw).trim();
+    return t && !t.startsWith('[object ') ? t : '';
+  }
+
   /** Lấy user ID người gửi (chuỗi) từ tin GramJS — ổn định hơn senderId?.toString() khi senderId là object/Long */
   static getMessageSenderUserId(message) {
     if (!message) return '';
@@ -152,21 +187,28 @@ class Utils {
     return false;
   }
 
-  // Kiểm tra user match với target (username hoặc user ID)
-  static isTargetUser(sender, targetUser) {
+  // Kiểm tra user match với target (username, user ID, hoặc self/me = tài khoản bot)
+  static isTargetUser(sender, targetUser, botUser = null) {
     if (!sender || !targetUser) return false;
-    
+
+    const target = String(targetUser).trim();
+    const selfAliases = ['self', 'me', '@me'];
+    if (selfAliases.includes(target.toLowerCase())) {
+      if (!botUser) return false;
+      return Utils.normalizeUserId(sender.id) === Utils.normalizeUserId(botUser.id);
+    }
+
     // Kiểm tra username
-    if (targetUser.startsWith('@')) {
-      const username = targetUser.slice(1); // Remove @
+    if (target.startsWith('@')) {
+      const username = target.slice(1);
       return sender.username && sender.username.toLowerCase() === username.toLowerCase();
     }
-    
+
     // Kiểm tra user ID
-    if (targetUser.match(/^\d+$/)) {
-      return sender.id && sender.id.toString() === targetUser;
+    if (target.match(/^\d+$/)) {
+      return Utils.normalizeUserId(sender.id) === target;
     }
-    
+
     return false;
   }
 

@@ -1043,6 +1043,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 /pic2 off all -1001234567890
 
 **Lưu ý Pic2:** chỉ chạy khi user gửi **ảnh** (không tính sticker). Nhiều rule cùng khớp một user → dùng rule **đầu tiên** trong list (một reply cho một tin ảnh).
+**Pic2 + setforward:** \`/pic2 on [nhóm_đích] self [nội dung]\` — nhận ảnh do chính bot gửi khi /setforward copy sang nhóm đó.
 
 **Commands - Copy hàng loạt (👑 admin, gõ trong nhóm/kênh đích):**
 /copyall [thời gian] [id nguồn] — Copy lịch sử từ nhóm/kênh nguồn vào **chat đang gõ lệnh**. Thời gian: \`24h\`, \`7d\`, \`2w\` hoặc ngày \`YYYY-MM-DD\` (UTC 00:00). Một tham số là ID (số), một tham số là mốc thời gian (thứ tự tùy ý).
@@ -1130,7 +1131,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 Mỗi \`/pic2 on\` **thêm** rule mới trong nhóm (không ghi đè). Sau khi thêm, bot gửi \`Rule ID\` — giữ để xóa từng rule.
 
 **Lệnh**
-/pic2 on [groupId] [userId hoặc @username] [nội dung reply]
+/pic2 on [groupId] [userId hoặc @username hoặc self/me] [nội dung reply]
 /pic2 list  |  /pic2 list [groupId]
 /pic2 off [groupId]  hoặc  /pic2 off all [groupId]  → xóa hết rule nhóm
 /pic2 off [groupId] [ruleId]  → xóa một rule
@@ -1139,6 +1140,7 @@ Mỗi \`/pic2 on\` **thêm** rule mới trong nhóm (không ghi đè). Sau khi t
 **Ví dụ**
 /pic2 on -1001234567890 @username Hello world!
 /pic2 on -1001234567890 123456789 Xin chào!
+/pic2 on -1009876543210 self OK ảnh forward — ảnh do /setforward bot gửi sang nhóm này
 /pic2 list
 /pic2 list -1001234567890
 /pic2 off -1001234567890 a1b2c3d4
@@ -1146,6 +1148,7 @@ Mỗi \`/pic2 on\` **thêm** rule mới trong nhóm (không ghi đè). Sau khi t
 /pic2 off all -1001234567890
 
 **Ghi chú:** Không tính sticker. Nhiều rule cùng user → rule **đầu tiên** trong list được dùng (một reply / một ảnh).
+**Setforward:** cấu pic2 ở **nhóm đích** (group B), target = \`self\` hoặc \`me\` — bot tự reply sau khi copy ảnh sang.
       `.trim();
       
       await this.sendReply(chatId, messageId, helpText);
@@ -1196,12 +1199,13 @@ Mỗi \`/pic2 on\` **thêm** rule mới trong nhóm (không ghi đè). Sau khi t
         // Username format
         validUser = targetUser.length > 1;
       } else if (targetUser.match(/^\d+$/)) {
-        // User ID format
+        validUser = true;
+      } else if (['self', 'me', '@me'].includes(targetUser.toLowerCase())) {
         validUser = true;
       }
 
       if (!validUser) {
-        await this.sendReply(chatId, messageId, '❌ User ID/Username không hợp lệ');
+        await this.sendReply(chatId, messageId, '❌ User ID/Username không hợp lệ (hoặc dùng `self` / `me` cho chính tài khoản bot)');
         return;
       }
 
@@ -2740,7 +2744,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         return;
       }
       try {
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 700));
         const recent = await this.client.getMessages(destChatId, { limit: multi ? 12 : 5 });
         const me = await this.getMeCached();
         const myId = me?.id != null ? me.id.toString() : '';
@@ -2984,9 +2988,20 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     const push = (m) => {
       if (m != null && m.id != null) ids.push(m.id);
     };
+    const pushUpdate = (u) => {
+      if (!u) return;
+      if (u.message) push(u.message);
+      else if (u.className === 'UpdateNewMessage' || u.className === 'UpdateNewChannelMessage') {
+        push(u.message);
+      }
+    };
     if (!sent) return ids;
     if (Array.isArray(sent)) {
       sent.forEach(push);
+      return ids;
+    }
+    if (sent.id != null) {
+      push(sent);
       return ids;
     }
     if (Array.isArray(sent.messages)) {
@@ -2994,39 +3009,11 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       return ids;
     }
     if (Array.isArray(sent.updates)) {
-      for (const u of sent.updates) {
-        if (u?.message) push(u.message);
-      }
+      for (const u of sent.updates) pushUpdate(u);
       return ids;
     }
-    push(sent);
+    if (sent.update) pushUpdate(sent.update);
     return ids;
-  }
-
-  /** Cách 2: sau setforward/setforward2 copy ảnh → kích pic2 ở nhóm đích (không chờ event) */
-  async triggerPic2ForForwardedPhotos(destGroupId, photoMessageIds) {
-    if (!photoMessageIds?.length) return;
-
-    const destId = destGroupId.toString();
-    const raw = this.settings.pic2Settings?.[destId];
-    const rules = Array.isArray(raw)
-      ? raw
-      : raw && typeof raw === 'object' && raw.targetUser != null
-        ? [raw]
-        : [];
-    if (!rules.some((r) => r && r.enabled)) return;
-
-    try {
-      const fetched = await this.client.getMessages(destGroupId, { ids: photoMessageIds });
-      const list = Array.isArray(fetched) ? fetched : fetched ? [fetched] : [];
-      for (const msg of list) {
-        if (msg && Utils.hasPhoto(msg)) {
-          await this.checkPic2Message(msg);
-        }
-      }
-    } catch (error) {
-      Utils.log(`⚠️ triggerPic2ForForwardedPhotos: ${error.message}`);
-    }
   }
 
   async getMeCached() {
@@ -3037,7 +3024,10 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
   }
 
   /** Sender cho pic2: tin outgoing (setforward, tự gửi) thường không có message.sender */
-  async resolvePic2Sender(message) {
+  async resolvePic2Sender(message, forceBot = false) {
+    if (forceBot) {
+      return this.getMeCached();
+    }
     if (message.sender) {
       return message.sender;
     }
@@ -3049,73 +3039,136 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         /* ignore */
       }
     }
-    if (message.out) {
-      return this.getMeCached();
+    const me = await this.getMeCached();
+    const myId = Utils.normalizeUserId(me?.id);
+    const sid = Utils.getMessageSenderUserId(message);
+    if (myId && sid === myId) {
+      return me;
     }
-    const uid = Utils.getMessageSenderUserId(message);
-    if (uid) {
-      return { id: uid };
+    if (message.out) {
+      return me;
+    }
+    if (sid) {
+      return { id: sid };
     }
     return null;
   }
 
-  // Kiểm tra và xử lý pic2 message
+  /** Pic2: lấy rule khớp sender (hỗ trợ self/me và ID nhóm -100… / -…) */
+  findPic2RuleForSender(chatId, sender, botUser) {
+    const rules = Utils.getPic2RulesForGroup(this.settings, chatId);
+    return rules.find(
+      (r) => r && r.enabled && Utils.isTargetUser(sender, r.targetUser, botUser)
+    );
+  }
+
+  /** Gửi reply pic2 cho một tin ảnh (dùng chung event + setforward) */
+  async applyPic2Reply(message, options = {}) {
+    const chatId = Utils.getMessageChatId(message) || String(options.chatId || '');
+    if (!chatId || !message?.id || !Utils.hasPhoto(message)) {
+      return false;
+    }
+
+    const rules = Utils.getPic2RulesForGroup(this.settings, chatId);
+    if (!rules.length) {
+      return false;
+    }
+
+    const me = await this.getMeCached();
+    const sender = await this.resolvePic2Sender(message, options.forceBot === true);
+    if (!sender) {
+      Utils.log(`⚠️ Pic2: không xác định được sender (chat ${chatId}, msg ${message.id})`);
+      return false;
+    }
+
+    const pic2Config = this.findPic2RuleForSender(chatId, sender, me);
+    if (!pic2Config) {
+      if (options.logMismatch) {
+        Utils.log(
+          `⚠️ Pic2: không khớp rule (chat ${chatId}, sender ${Utils.normalizeUserId(sender.id)})`
+        );
+      }
+      return false;
+    }
+
+    const pic2Key = `pic2_${chatId}_${message.id}`;
+    if (this.processedMessages.has(pic2Key)) {
+      return false;
+    }
+    this.processedMessages.set(pic2Key, Date.now());
+
+    await this.client.sendMessage(chatId, {
+      message: pic2Config.replyMessage,
+      replyTo: message.id,
+    });
+
+    const userDisplay = sender.username ? `@${sender.username}` : `ID: ${Utils.normalizeUserId(sender.id)}`;
+    const via = options.forceBot ? ' (setforward)' : '';
+    Utils.log(
+      `📸 Pic2 reply${via}: ${userDisplay} trong ${chatId} -> "${pic2Config.replyMessage}"`
+    );
+    return true;
+  }
+
+  /** Sau setforward: kích pic2 ở nhóm đích — ép sender = bot, fallback lấy tin vừa gửi */
+  async triggerPic2ForForwardedPhotos(destGroupId, photoMessageIds) {
+    const destId = String(destGroupId);
+    const rules = Utils.getPic2RulesForGroup(this.settings, destId);
+    if (!rules.some((r) => r && r.enabled)) {
+      Utils.log(`⏭️ Pic2 setforward: không có rule cho nhóm ${destId}`);
+      return;
+    }
+
+    await this.getMeCached();
+
+    let ids = [...(photoMessageIds || [])];
+    if (!ids.length) {
+      try {
+        await new Promise((r) => setTimeout(r, 700));
+        const recent = await this.client.getMessages(destGroupId, { limit: 15 });
+        const myId = Utils.normalizeUserId(this.me?.id);
+        for (const m of recent) {
+          if (!m?.id || !Utils.hasPhoto(m)) continue;
+          const sid = Utils.getMessageSenderUserId(m);
+          if (myId && sid && sid !== myId && !m.out) continue;
+          ids.push(m.id);
+          break;
+        }
+      } catch (e) {
+        Utils.log(`⚠️ Pic2 setforward fallback fetch: ${e.message}`);
+      }
+    }
+
+    if (!ids.length) {
+      Utils.log(`⚠️ Pic2 setforward: không lấy được message id ảnh ở ${destId}`);
+      return;
+    }
+
+    Utils.log(`📸 Pic2 setforward: thử ${ids.length} tin ở ${destId} (ids: ${ids.join(', ')})`);
+
+    for (const msgId of ids) {
+      try {
+        const fetched = await this.client.getMessages(destGroupId, { ids: [msgId] });
+        const message = Array.isArray(fetched) ? fetched[0] : fetched;
+        if (!message) continue;
+        await this.applyPic2Reply(message, {
+          chatId: destId,
+          forceBot: true,
+          logMismatch: true,
+        });
+      } catch (e) {
+        Utils.log(`⚠️ Pic2 setforward msg ${msgId}: ${e.message}`);
+      }
+    }
+  }
+
+  // Kiểm tra và xử lý pic2 message (tin nhắn mới từ event)
   async checkPic2Message(message) {
     try {
-      // Kiểm tra có pic2Settings không
       if (!this.settings.pic2Settings || Object.keys(this.settings.pic2Settings).length === 0) {
         return;
       }
-
-      const chatId = message.chatId.toString();
-      const raw = this.settings.pic2Settings[chatId];
-      const rules = Array.isArray(raw)
-        ? raw
-        : raw && typeof raw === 'object' && raw.targetUser != null
-          ? [raw]
-          : [];
-
-      if (rules.length === 0) {
-        return;
-      }
-
-      // Kiểm tra tin nhắn có hình ảnh không
-      if (!Utils.hasPhoto(message)) {
-        return;
-      }
-
-      const sender = await this.resolvePic2Sender(message);
-      if (!sender) {
-        return;
-      }
-
-      const pic2Config = rules.find(
-        (r) => r && r.enabled && Utils.isTargetUser(sender, r.targetUser)
-      );
-      if (!pic2Config) {
-        return;
-      }
-
-      // Tạo unique key để tránh duplicate
-      const pic2Key = `pic2_${chatId}_${message.id}`;
-      
-      // Kiểm tra đã process chưa
-      if (this.processedMessages.has(pic2Key)) {
-        return;
-      }
-
-      // Mark as processed
-      this.processedMessages.set(pic2Key, Date.now());
-
-      // Reply với message đã cấu hình
-      await this.client.sendMessage(message.chatId, {
-        message: pic2Config.replyMessage,
-        replyTo: message.id
-      });
-
-      const userDisplay = sender.username ? `@${sender.username}` : `ID: ${sender.id}`;
-      Utils.log(`📸 Pic2 reply: ${userDisplay} gửi hình trong group ${chatId} -> reply: "${pic2Config.replyMessage}"`);
-
+      await this.applyPic2Reply(message);
     } catch (error) {
       Utils.log(`❌ Lỗi khi xử lý pic2: ${error.message}`);
     }
