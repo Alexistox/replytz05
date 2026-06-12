@@ -14,6 +14,7 @@ class BankTransactionUserbot {
     this.processedMessages = new Map(); // Store timestamp with message
     this.processingMessages = new Set(); // Track currently processing messages
     this.eventHandlerRegistered = false; // Prevent duplicate event handlers
+    this.me = null; // Cache tài khoản bot (pic2 tin outgoing / setforward)
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -2129,6 +2130,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
       
       if (result.success) {
+        await this.triggerPic2ForForwardedPhotos(activeRule.destGroupId, result.photoMessageIds);
+
         const messageType = Utils.getMessageType(originalMessage);
         const originalSender = originalMessage.sender?.username ? 
           `@${originalMessage.sender.username}` : 
@@ -2229,6 +2232,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       
       const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
       if (result.success) {
+        await this.triggerPic2ForForwardedPhotos(activeRule.destGroupId, result.photoMessageIds);
+
         const reactionType = isForward2 ? 'global reaction' : 'reaction';
         let successMessage = `${isForward2 ? '🌐' : '🤖'} Admin ${reactorUserId} đã chuyển tiếp qua ${reactionType} ${reactionEmoji} đến nhóm \`${activeRule.destGroupId}\``;
         
@@ -2725,6 +2730,16 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
   // Copy tin nhạn đa dạng
   async copyMessage(originalMessage, destChatId) {
+    const photoMessageIds = [];
+    const trackSentPhotos = (sent) => {
+      photoMessageIds.push(...this.extractSentMessageIds(sent));
+    };
+    const ok = (extra = {}) => ({
+      success: true,
+      ...(photoMessageIds.length ? { photoMessageIds: [...photoMessageIds] } : {}),
+      ...extra,
+    });
+
     try {
       const rawText = originalMessage.message || originalMessage.text || '';
 
@@ -2916,6 +2931,36 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
   // ================= PIC2 FUNCTIONS =================
 
+  async getMeCached() {
+    if (!this.me) {
+      this.me = await this.client.getMe();
+    }
+    return this.me;
+  }
+
+  /** Sender cho pic2: tin outgoing (setforward, tự gửi) thường không có message.sender */
+  async resolvePic2Sender(message) {
+    if (message.sender) {
+      return message.sender;
+    }
+    if (typeof message.getSender === 'function') {
+      try {
+        const sender = await message.getSender();
+        if (sender) return sender;
+      } catch (_e) {
+        /* ignore */
+      }
+    }
+    if (message.out) {
+      return this.getMeCached();
+    }
+    const uid = Utils.getMessageSenderUserId(message);
+    if (uid) {
+      return { id: uid };
+    }
+    return null;
+  }
+
   // Kiểm tra và xử lý pic2 message
   async checkPic2Message(message) {
     try {
@@ -2941,8 +2986,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         return;
       }
 
-      // Lấy thông tin sender
-      const sender = message.sender;
+      const sender = await this.resolvePic2Sender(message);
       if (!sender) {
         return;
       }
@@ -3055,8 +3099,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       this.setupEventHandlers();
 
       // Get thông tin user
-      const me = await this.client.getMe();
-      Utils.log(`👤 Đăng nhập như: ${me.firstName} ${me.lastName || ''} (@${me.username || 'no_username'})`);
+      this.me = await this.client.getMe();
+      Utils.log(`👤 Đăng nhập như: ${this.me.firstName} ${this.me.lastName || ''} (@${this.me.username || 'no_username'})`);
 
       this.isRunning = true;
       Utils.log('✅ UserBot đã sẵn sàng hoạt động!');
