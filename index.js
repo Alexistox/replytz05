@@ -2731,8 +2731,29 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
   // Copy tin nhạn đa dạng
   async copyMessage(originalMessage, destChatId) {
     const photoMessageIds = [];
-    const trackSentPhotos = (sent) => {
-      photoMessageIds.push(...this.extractSentMessageIds(sent));
+    const trackSentPhotos = async (sent, multi = false) => {
+      const ids = this.extractSentMessageIds(sent);
+      if (ids.length) {
+        for (const id of ids) {
+          if (!photoMessageIds.includes(id)) photoMessageIds.push(id);
+        }
+        return;
+      }
+      try {
+        await new Promise((r) => setTimeout(r, 300));
+        const recent = await this.client.getMessages(destChatId, { limit: multi ? 12 : 5 });
+        const me = await this.getMeCached();
+        const myId = me?.id != null ? me.id.toString() : '';
+        for (const m of recent) {
+          if (!m?.out || !Utils.hasPhoto(m)) continue;
+          const sid = Utils.getMessageSenderUserId(m);
+          if (myId && sid && sid !== myId) continue;
+          if (!photoMessageIds.includes(m.id)) photoMessageIds.push(m.id);
+          if (!multi) break;
+        }
+      } catch (e) {
+        Utils.log(`⚠️ trackSentPhotos fallback: ${e.message}`);
+      }
     };
     const ok = (extra = {}) => ({
       success: true,
@@ -2797,13 +2818,16 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
               // Method 1: Send as true album using array of files
               const albumFiles = mediaFiles.map(media => media.file);
               
-              await this.client.sendMessage(destChatId, {
-                file: albumFiles, // Send array of files - creates true album
-                message: albumCaption || '' // Album caption
-              });
+              await trackSentPhotos(
+                await this.client.sendMessage(destChatId, {
+                  file: albumFiles,
+                  message: albumCaption || '',
+                }),
+                true
+              );
               
               Utils.log(`✅ Successfully sent album with ${mediaFiles.length} items as true album`);
-              return { success: true, albumSize: mediaFiles.length };
+              return ok({ albumSize: mediaFiles.length });
               
             } catch (albumError) {
               Utils.log(`❌ True album send failed, trying forwardMessages method: ${albumError.message}`);
@@ -2816,26 +2840,32 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
                 // Method 2: Forward entire album as a group (preserves album structure)
                 const messageIds = groupMessages.map(msg => msg.id);
                 
-                await this.client.forwardMessages(destChatId, {
-                  messages: messageIds,
-                  fromPeer: originalMessage.chatId
-                });
+                await trackSentPhotos(
+                  await this.client.forwardMessages(destChatId, {
+                    messages: messageIds,
+                    fromPeer: originalMessage.chatId,
+                  }),
+                  true
+                );
                 
                 Utils.log(`✅ Successfully forwarded album with ${messageIds.length} items as true album`);
-                return { success: true, albumSize: messageIds.length, method: 'forward' };
+                return ok({ albumSize: messageIds.length, method: 'forward' });
                 
               } catch (forwardError) {
                 Utils.log(`❌ forwardMessages failed, trying sendFile method: ${forwardError.message}`);
                 
                 try {
                   // Method 3: Use sendFile with multiple files
-                  await this.client.sendFile(destChatId, albumFiles, {
-                    caption: albumCaption || '',
-                    forceDocument: false
-                  });
+                  await trackSentPhotos(
+                    await this.client.sendFile(destChatId, albumFiles, {
+                      caption: albumCaption || '',
+                      forceDocument: false,
+                    }),
+                    true
+                  );
                   
                   Utils.log(`✅ Successfully sent album using sendFile method`);
-                  return { success: true, albumSize: mediaFiles.length, method: 'sendFile' };
+                  return ok({ albumSize: mediaFiles.length, method: 'sendFile' });
                   
                 } catch (sendFileError) {
                   Utils.log(`❌ sendFile failed, falling back to individual messages: ${sendFileError.message}`);
@@ -2847,20 +2877,22 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
                   const media = mediaFiles[i];
                   const isFirst = i === 0;
                   
-                  await this.client.sendMessage(destChatId, {
-                    file: media.file,
-                    message: isFirst ? albumCaption : '', // Only caption on first item
-                    scheduleDate: timestamp // Try to group by same timestamp
-                  });
+                  await trackSentPhotos(
+                    await this.client.sendMessage(destChatId, {
+                      file: media.file,
+                      message: isFirst ? albumCaption : '',
+                      scheduleDate: timestamp,
+                    }),
+                    true
+                  );
                   
-                  // Minimal delay to maintain order
                   if (i < mediaFiles.length - 1) {
                     await new Promise(resolve => setTimeout(resolve, 50));
                   }
                 }
                 
                 Utils.log(`✅ Album sent as individual files with grouping attempt`);
-                return { success: true, albumSize: mediaFiles.length, fallback: true };
+                return ok({ albumSize: mediaFiles.length, fallback: true });
                 }
               }
             }
@@ -2876,7 +2908,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       // Copy tin nhắn văn bản
       if (messageText && !originalMessage.media) {
         await this.client.sendMessage(destChatId, { message: messageText });
-        return { success: true };
+        return ok();
       }
       
       // Copy tin nhắn có media
@@ -2885,17 +2917,28 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         
         switch (mediaType) {
           case 'MessageMediaPhoto':
-            await this.client.sendMessage(destChatId, {
-              file: originalMessage.media.photo,
-              message: messageText || ''
-            });
+            await trackSentPhotos(
+              await this.client.sendMessage(destChatId, {
+                file: originalMessage.media.photo,
+                message: messageText || '',
+              })
+            );
             break;
             
           case 'MessageMediaDocument':
-            await this.client.sendMessage(destChatId, {
-              file: originalMessage.media.document,
-              message: messageText || ''
-            });
+            if (Utils.hasPhoto(originalMessage)) {
+              await trackSentPhotos(
+                await this.client.sendMessage(destChatId, {
+                  file: originalMessage.media.document,
+                  message: messageText || '',
+                })
+              );
+            } else {
+              await this.client.sendMessage(destChatId, {
+                file: originalMessage.media.document,
+                message: messageText || '',
+              });
+            }
             break;
             
           default:
@@ -2903,25 +2946,29 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
               Utils.log('⏭️ Bỏ qua forward: caption gốc là QC/cờ bạc');
               return { success: true, skippedPolicy: true };
             }
-            await this.client.forwardMessages(destChatId, {
-              messages: [originalMessage.id],
-              fromPeer: originalMessage.chatId
-            });
+            await trackSentPhotos(
+              await this.client.forwardMessages(destChatId, {
+                messages: [originalMessage.id],
+                fromPeer: originalMessage.chatId,
+              })
+            );
         }
         
-        return { success: true };
+        return ok();
       }
       
       if (Utils.shouldSkipForwardDueToCopyPolicy(originalMessage)) {
         Utils.log('⏭️ Bỏ qua forward: caption gốc là QC/cờ bạc');
         return { success: true, skippedPolicy: true };
       }
-      await this.client.forwardMessages(destChatId, {
-        messages: [originalMessage.id],
-        fromPeer: originalMessage.chatId
-      });
+      await trackSentPhotos(
+        await this.client.forwardMessages(destChatId, {
+          messages: [originalMessage.id],
+          fromPeer: originalMessage.chatId,
+        })
+      );
       
-      return { success: true };
+      return ok();
       
     } catch (error) {
       Utils.log(`❌ Copy message error: ${error.message}`);
@@ -2930,6 +2977,57 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
   }
 
   // ================= PIC2 FUNCTIONS =================
+
+  /** Lấy message id từ kết quả sendMessage / forwardMessages (GramJS) */
+  extractSentMessageIds(sent) {
+    const ids = [];
+    const push = (m) => {
+      if (m != null && m.id != null) ids.push(m.id);
+    };
+    if (!sent) return ids;
+    if (Array.isArray(sent)) {
+      sent.forEach(push);
+      return ids;
+    }
+    if (Array.isArray(sent.messages)) {
+      sent.messages.forEach(push);
+      return ids;
+    }
+    if (Array.isArray(sent.updates)) {
+      for (const u of sent.updates) {
+        if (u?.message) push(u.message);
+      }
+      return ids;
+    }
+    push(sent);
+    return ids;
+  }
+
+  /** Cách 2: sau setforward/setforward2 copy ảnh → kích pic2 ở nhóm đích (không chờ event) */
+  async triggerPic2ForForwardedPhotos(destGroupId, photoMessageIds) {
+    if (!photoMessageIds?.length) return;
+
+    const destId = destGroupId.toString();
+    const raw = this.settings.pic2Settings?.[destId];
+    const rules = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === 'object' && raw.targetUser != null
+        ? [raw]
+        : [];
+    if (!rules.some((r) => r && r.enabled)) return;
+
+    try {
+      const fetched = await this.client.getMessages(destGroupId, { ids: photoMessageIds });
+      const list = Array.isArray(fetched) ? fetched : fetched ? [fetched] : [];
+      for (const msg of list) {
+        if (msg && Utils.hasPhoto(msg)) {
+          await this.checkPic2Message(msg);
+        }
+      }
+    } catch (error) {
+      Utils.log(`⚠️ triggerPic2ForForwardedPhotos: ${error.message}`);
+    }
+  }
 
   async getMeCached() {
     if (!this.me) {

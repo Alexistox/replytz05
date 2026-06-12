@@ -731,6 +731,29 @@ class Utils {
     return n;
   }
 
+  /** Cùng một nhóm Telegram có thể lưu ID dạng -100… hoặc -… ngắn hơn */
+  static getAlternateGroupIds(groupId) {
+    const id = String(groupId);
+    const alts = new Set([id]);
+    if (id.startsWith('-100') && id.length > 4) {
+      alts.add(`-${id.slice(4)}`);
+    } else if (/^-\d+$/.test(id)) {
+      alts.add(`-100${id.slice(1)}`);
+    }
+    return Array.from(alts);
+  }
+
+  static getPic2RulesForGroup(settings, groupId) {
+    if (!settings?.pic2Settings) return [];
+    for (const gid of Utils.getAlternateGroupIds(groupId)) {
+      const raw = settings.pic2Settings[gid];
+      if (!raw) continue;
+      if (Array.isArray(raw)) return raw;
+      if (raw && typeof raw === 'object' && raw.targetUser != null) return [raw];
+    }
+    return [];
+  }
+
   // ================== COPYALL / NEWCOPY ==================
 
   static makeCopyWatermarkKey(sourceId, destId) {
