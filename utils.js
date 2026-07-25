@@ -491,6 +491,15 @@ class Utils {
     return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
+  /** Pic2: bỏ qua reply nếu caption ảnh là "x" hoặc "0" (không phân biệt hoa thường với x) */
+  static shouldSkipPic2DueToCaption(message) {
+    if (!message) return false;
+    const caption = (message.message || message.text || '').trim();
+    if (!caption) return false;
+    const lower = caption.toLowerCase();
+    return lower === 'x' || caption === '0';
+  }
+
   /** Forward giữ nguyên caption gốc — bỏ qua nếu toàn bộ chữ là QC/cờ bạc (đã lọc hết) */
   static shouldSkipForwardDueToCopyPolicy(message) {
     if (!message || !Utils.isCopyPolicyFilterEnabled()) return false;

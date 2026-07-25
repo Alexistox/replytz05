@@ -3074,6 +3074,11 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       return false;
     }
 
+    if (Utils.shouldSkipPic2DueToCaption(message)) {
+      Utils.log(`⏭️ Pic2: bỏ qua ảnh caption "x"/"0" (chat ${chatId}, msg ${message.id})`);
+      return false;
+    }
+
     const me = await this.getMeCached();
     const sender = await this.resolvePic2Sender(message, options.forceBot === true);
     if (!sender) {
