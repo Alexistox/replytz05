@@ -337,35 +337,94 @@ class BankTransactionUserbot {
   registerForwardMirror({ sourceGroupId, sourceMsgId, destGroupId, destMsgIds }) {
     const srcGid = String(sourceGroupId || '');
     const destGid = String(destGroupId || '');
-    const srcMid = sourceMsgId != null ? Number(sourceMsgId) : null;
-    if (!srcGid || !destGid || !srcMid || !Array.isArray(destMsgIds) || !destMsgIds.length) {
+    const srcMid = sourceMsgId != null ? parseInt(String(sourceMsgId), 10) : NaN;
+    if (!srcGid || !destGid || !Number.isFinite(srcMid) || !Array.isArray(destMsgIds) || !destMsgIds.length) {
       return;
     }
     const now = Date.now();
+    const destIds = [];
+    const destGids = Utils.getAlternateGroupIds(destGid);
     for (const id of destMsgIds) {
       if (id == null) continue;
-      const key = `${destGid}_${id}`;
-      this.forwardMirrorMap.set(key, {
-        sourceGroupId: srcGid,
-        sourceMsgId: srcMid,
-        createdAt: now,
-      });
+      const destMid = parseInt(String(id), 10);
+      if (!Number.isFinite(destMid)) continue;
+      destIds.push(destMid);
+      for (const dg of destGids) {
+        const key = `${dg}_${destMid}`;
+        this.forwardMirrorMap.set(key, {
+          sourceGroupId: srcGid,
+          sourceMsgId: srcMid,
+          createdAt: now,
+        });
+      }
     }
     Utils.log(
-      `🔗 Forward mirror map: ${destMsgIds.length} tin ở ${destGid} → ${srcGid}/${srcMid}`
+      `🔗 Forward mirror map: dest=[${destIds.join(',')}] @ ${destGid} → ${srcGid}/${srcMid}`
     );
   }
 
   lookupForwardMirror(destGroupId, destMsgId) {
     if (destGroupId == null || destMsgId == null) return null;
-    const key = `${String(destGroupId)}_${destMsgId}`;
-    const entry = this.forwardMirrorMap.get(key);
-    if (!entry) return null;
-    if (Date.now() - entry.createdAt > this.forwardMirrorTtlMs) {
-      this.forwardMirrorMap.delete(key);
-      return null;
+    const destMid = parseInt(String(destMsgId), 10);
+    if (!Number.isFinite(destMid)) return null;
+    for (const gid of Utils.getAlternateGroupIds(destGroupId)) {
+      const key = `${gid}_${destMid}`;
+      const entry = this.forwardMirrorMap.get(key);
+      if (!entry) continue;
+      if (Date.now() - entry.createdAt > this.forwardMirrorTtlMs) {
+        this.forwardMirrorMap.delete(key);
+        continue;
+      }
+      return entry;
     }
-    return entry;
+    return null;
+  }
+
+  /** Gửi mirror reply về nhóm A — resolve peer, xác minh tin nguồn, log id đã gửi */
+  async sendForwardMirrorReply(sourceGroupId, sourceMsgId, text) {
+    const srcMid = parseInt(String(sourceMsgId), 10);
+    if (!Number.isFinite(srcMid)) {
+      throw new Error(`sourceMsgId không hợp lệ: ${sourceMsgId}`);
+    }
+
+    let lastError = null;
+    for (const gid of Utils.getAlternateGroupIds(sourceGroupId)) {
+      try {
+        const peer = await this.client.getEntity(gid);
+        const fetched = await this.client.getMessages(peer, { ids: [srcMid] });
+        const srcMsg = Array.isArray(fetched) ? fetched[0] : fetched;
+        if (!srcMsg || srcMsg.id == null) {
+          Utils.log(`⚠️ Mirror: không thấy tin nguồn ${srcMid} ở ${gid}`);
+          lastError = new Error(`Không thấy tin ${srcMid} ở ${gid}`);
+          continue;
+        }
+
+        const replyToId = parseInt(String(srcMsg.id), 10);
+        const sent = await this.client.sendMessage(peer, {
+          message: String(text),
+          replyTo: replyToId,
+        });
+        const sentIds = this.extractSentMessageIds(sent);
+        const sentId = sentIds[0] != null ? parseInt(String(sentIds[0]), 10) : sent?.id;
+        const sentReplyTo =
+          sent?.replyTo?.replyToMsgId ??
+          sent?.replyToMsgId ??
+          null;
+
+        Utils.log(
+          `↩️ Mirror đã gửi: chat=${gid} sentId=${sentId ?? '?'} replyTo=${sentReplyTo ?? replyToId} text="${text}" (src có ảnh=${Utils.hasPhoto(srcMsg)})`
+        );
+
+        if (sentId == null) {
+          throw new Error('sendMessage không trả về message id');
+        }
+        return { sentId, peerGid: gid, replyTo: sentReplyTo ?? replyToId };
+      } catch (e) {
+        lastError = e;
+        Utils.log(`⚠️ Mirror send thử ${gid}: ${e.message}`);
+      }
+    }
+    throw lastError || new Error('Mirror send thất bại');
   }
 
   cleanupForwardMirrorMap() {
@@ -2331,15 +2390,16 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         Utils.log(`⏭️ Forward mirror: đã reply ${text} cho ${sourceGroupId}/${sourceMsgId}`);
         return true;
       }
-      this.processedMessages.set(mirrorKey, Date.now());
-
-      await this.client.sendMessage(sourceGroupId, {
-        message: text,
-        replyTo: sourceMsgId,
-      });
 
       Utils.log(
-        `↩️ Forward mirror: ${destChatId}/${replyToMsgId} "${text}" (by ${senderUserId}) → ${sourceGroupId}/${sourceMsgId}`
+        `↩️ Forward mirror thử: B ${destChatId}/${replyToMsgId} "${text}" (by ${senderUserId}) → A ${sourceGroupId}/${sourceMsgId}`
+      );
+
+      const result = await this.sendForwardMirrorReply(sourceGroupId, sourceMsgId, text);
+      this.processedMessages.set(mirrorKey, Date.now());
+
+      Utils.log(
+        `✅ Forward mirror OK: A ${result.peerGid} msg#${result.sentId} replyTo=#${result.replyTo}`
       );
       return true;
     } catch (error) {
@@ -2415,8 +2475,11 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       if (result.success) {
         if (!isForward2 && result.photoMessageIds?.length) {
           this.registerForwardMirror({
-            sourceGroupId: activeRule.sourceGroupId || chatId,
-            sourceMsgId: replyToMsgId,
+            sourceGroupId:
+              Utils.getMessageChatId(originalMessage) ||
+              activeRule.sourceGroupId ||
+              chatId,
+            sourceMsgId: originalMessage.id || replyToMsgId,
             destGroupId: activeRule.destGroupId,
             destMsgIds: result.photoMessageIds,
           });
@@ -2526,7 +2589,10 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       if (result.success) {
         if (!isForward2 && result.photoMessageIds?.length) {
           this.registerForwardMirror({
-            sourceGroupId: activeRule.sourceGroupId || chatId,
+            sourceGroupId:
+              Utils.getMessageChatId(originalMessage) ||
+              activeRule.sourceGroupId ||
+              chatId,
             sourceMsgId: originalMessage.id,
             destGroupId: activeRule.destGroupId,
             destMsgIds: result.photoMessageIds,
