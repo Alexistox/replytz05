@@ -29,6 +29,7 @@ sessionString: "",
     groupSettings: {}, // Mỗi nhóm: { replyEnabled }
     pic2Settings: {}, // Pic2: { [groupId]: [ { id, enabled, targetUser, replyMessage }, ... ] }
     forwardRules: [], // Rules cho auto forward: { sourceGroupId, destGroupId, trigger, createdBy, createdTime, status }
+    mirrorTriggers: {}, // Mirror 1/2/3: { [groupBId]: [userId, ...] } — chỉ user trong list mới mirror về A
     copyAllWatermark: {}, // /copyall & /newcopy: { "sourceId_destId": lastMessageId }
     adminUsers: [] // Danh sách user IDs có quyền admin: [userId1, userId2, ...]
   }

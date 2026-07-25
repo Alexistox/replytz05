@@ -500,6 +500,90 @@ class Utils {
     return lower === 'x' || caption === '0';
   }
 
+  /** Setforward mirror: reply ở nhóm B đúng chữ 1 / 2 / 3 */
+  static isForwardMirrorConfirmText(text) {
+    if (text == null) return false;
+    const t = String(text).trim();
+    return t === '1' || t === '2' || t === '3';
+  }
+
+  /** Chuẩn hóa user id cho /trigger (số, @user, self/me) → chuỗi lưu settings */
+  static normalizeMirrorTriggerUserRef(userRef, botUser = null) {
+    if (userRef == null) return '';
+    const raw = String(userRef).trim();
+    if (!raw) return '';
+    const lower = raw.toLowerCase();
+    if (lower === 'self' || lower === 'me' || lower === '@me') {
+      return botUser ? Utils.normalizeUserId(botUser.id) : 'self';
+    }
+    if (raw.startsWith('@')) return raw.toLowerCase();
+    return Utils.normalizeUserId(raw) || raw;
+  }
+
+  static getMirrorTriggerUsers(settings, groupId) {
+    if (!settings?.mirrorTriggers || typeof settings.mirrorTriggers !== 'object') {
+      return [];
+    }
+    for (const gid of Utils.getAlternateGroupIds(groupId)) {
+      const list = settings.mirrorTriggers[gid];
+      if (Array.isArray(list)) return list.map(String);
+    }
+    return [];
+  }
+
+  static isMirrorTriggerUser(settings, groupId, userId, botUser = null, sender = null) {
+    const uid = Utils.normalizeUserId(userId);
+    const list = Utils.getMirrorTriggerUsers(settings, groupId);
+    if (!list.length) return false;
+    for (const entry of list) {
+      const e = String(entry).trim();
+      if (!e) continue;
+      if (e.startsWith('@')) {
+        const uname = sender?.username || '';
+        if (uname && uname.toLowerCase() === e.slice(1).toLowerCase()) return true;
+        continue;
+      }
+      if (uid && Utils.normalizeUserId(e) === uid) return true;
+      if ((e === 'self' || e === 'me') && botUser && uid && Utils.normalizeUserId(botUser.id) === uid) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static addMirrorTriggerUser(settings, groupId, userRef, botUser = null) {
+    if (!settings.mirrorTriggers || typeof settings.mirrorTriggers !== 'object') {
+      settings.mirrorTriggers = {};
+    }
+    const gid = String(groupId);
+    const stored = Utils.normalizeMirrorTriggerUserRef(userRef, botUser);
+    if (!stored) return { success: false, message: 'User ID không hợp lệ' };
+    if (!settings.mirrorTriggers[gid]) settings.mirrorTriggers[gid] = [];
+    const list = settings.mirrorTriggers[gid];
+    if (list.some((x) => String(x) === stored)) {
+      return { success: false, message: 'User đã có trong danh sách trigger' };
+    }
+    list.push(stored);
+    return { success: true, userId: stored };
+  }
+
+  static removeMirrorTriggerUser(settings, groupId, userRef, botUser = null) {
+    if (!settings.mirrorTriggers || typeof settings.mirrorTriggers !== 'object') {
+      return { success: false, message: 'Chưa có trigger nào' };
+    }
+    const stored = Utils.normalizeMirrorTriggerUserRef(userRef, botUser);
+    for (const gid of Utils.getAlternateGroupIds(groupId)) {
+      const list = settings.mirrorTriggers[gid];
+      if (!Array.isArray(list)) continue;
+      const idx = list.findIndex((x) => String(x) === stored);
+      if (idx === -1) continue;
+      list.splice(idx, 1);
+      if (list.length === 0) delete settings.mirrorTriggers[gid];
+      return { success: true, userId: stored };
+    }
+    return { success: false, message: 'Không tìm thấy user trong trigger của nhóm này' };
+  }
+
   /** Forward giữ nguyên caption gốc — bỏ qua nếu toàn bộ chữ là QC/cờ bạc (đã lọc hết) */
   static shouldSkipForwardDueToCopyPolicy(message) {
     if (!message || !Utils.isCopyPolicyFilterEnabled()) return false;

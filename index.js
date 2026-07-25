@@ -15,12 +15,16 @@ class BankTransactionUserbot {
     this.processingMessages = new Set(); // Track currently processing messages
     this.eventHandlerRegistered = false; // Prevent duplicate event handlers
     this.me = null; // Cache tài khoản bot (pic2 tin outgoing / setforward)
+    // setforward A→B: destMsgId (B) → sourceMsgId (A) để mirror reply 1/2/3
+    this.forwardMirrorMap = new Map();
+    this.forwardMirrorTtlMs = 2 * 60 * 60 * 1000; // TTL ~2h
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
     this.migrateCalToGlobal();
     this.migratePic2Settings();
     this.migrateCopyAllWatermark();
+    this.migrateMirrorTriggers();
     
     Utils.log('🤖 Bank Transaction Userbot khởi tạo');
     Utils.log(`📊 Chế độ: Reply theo từng nhóm`);
@@ -83,6 +87,14 @@ class BankTransactionUserbot {
       this.settings.copyAllWatermark = {};
       Utils.saveSettings(this.settings);
       Utils.log('✅ Đã khởi tạo copyAllWatermark');
+    }
+  }
+
+  migrateMirrorTriggers() {
+    if (!this.settings.mirrorTriggers || typeof this.settings.mirrorTriggers !== 'object') {
+      this.settings.mirrorTriggers = {};
+      Utils.saveSettings(this.settings);
+      Utils.log('✅ Đã khởi tạo mirrorTriggers');
     }
   }
 
@@ -316,8 +328,58 @@ class BankTransactionUserbot {
           this.recentMessages.delete(key);
         }
       }
+      this.cleanupForwardMirrorMap();
       Utils.log(`🧹 Cleaned up old message tracking. Current count: ${this.recentMessages.size}`);
     }, 5 * 60 * 1000);
+  }
+
+  /** Đăng ký map ảnh Y (nhóm B) → ảnh X (nhóm A) sau setforward */
+  registerForwardMirror({ sourceGroupId, sourceMsgId, destGroupId, destMsgIds }) {
+    const srcGid = String(sourceGroupId || '');
+    const destGid = String(destGroupId || '');
+    const srcMid = sourceMsgId != null ? Number(sourceMsgId) : null;
+    if (!srcGid || !destGid || !srcMid || !Array.isArray(destMsgIds) || !destMsgIds.length) {
+      return;
+    }
+    const now = Date.now();
+    for (const id of destMsgIds) {
+      if (id == null) continue;
+      const key = `${destGid}_${id}`;
+      this.forwardMirrorMap.set(key, {
+        sourceGroupId: srcGid,
+        sourceMsgId: srcMid,
+        createdAt: now,
+      });
+    }
+    Utils.log(
+      `🔗 Forward mirror map: ${destMsgIds.length} tin ở ${destGid} → ${srcGid}/${srcMid}`
+    );
+  }
+
+  lookupForwardMirror(destGroupId, destMsgId) {
+    if (destGroupId == null || destMsgId == null) return null;
+    const key = `${String(destGroupId)}_${destMsgId}`;
+    const entry = this.forwardMirrorMap.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.createdAt > this.forwardMirrorTtlMs) {
+      this.forwardMirrorMap.delete(key);
+      return null;
+    }
+    return entry;
+  }
+
+  cleanupForwardMirrorMap() {
+    const cutoff = Date.now() - this.forwardMirrorTtlMs;
+    let removed = 0;
+    for (const [key, entry] of this.forwardMirrorMap.entries()) {
+      if (!entry || entry.createdAt < cutoff) {
+        this.forwardMirrorMap.delete(key);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      Utils.log(`🧹 Forward mirror map: xóa ${removed}, còn ${this.forwardMirrorMap.size}`);
+    }
   }
 
   // Xử lý tin nhắn mới
@@ -373,9 +435,12 @@ class BankTransactionUserbot {
       // Kiểm tra pic2 settings trước (không phụ thuộc vào replyEnabled)
       await this.checkPic2Message(message);
 
-      // Kiểm tra auto-forward trước (không phụ thuộc vào replyEnabled)
+      // Kiểm tra auto-forward / mirror reply 1/2/3 (không phụ thuộc vào replyEnabled)
       if (message.replyTo) {
-        await this.checkAutoForwardMessage(message);
+        const mirrored = await this.checkForwardMirrorReply(message);
+        if (!mirrored) {
+          await this.checkAutoForwardMessage(message);
+        }
       }
 
       const groupId = chatId.toString();
@@ -692,6 +757,14 @@ class BankTransactionUserbot {
         await this.handlePic2Command(args, chatId, messageId);
         break;
       
+      case '/trigger':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '');
+          return;
+        }
+        await this.handleTriggerCommand(args, chatId, messageId);
+        break;
+
       case '/setforward':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
           await this.sendReply(chatId, messageId, '');
@@ -989,6 +1062,7 @@ class BankTransactionUserbot {
 /ad - Admin management 👑
 /groups - Danh sách groups 👑
 /pic2 - Cấu hình pic2 👑
+/trigger - Whitelist mirror 1/2/3 (nhóm B) 👑
 /setforward - Thiết lập auto-forward 👑
 /setforward2 - Thiết lập global forward 👑
 /listforward - Xem forward rules 👑
@@ -1066,6 +1140,10 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 **Cách sử dụng Forward:**
 🔹 **Reply method:** Reply tin nhắn + gõ trigger
 🔹 **Reaction method:** Admin react emoji trigger vào tin nhắn (👑 chỉ admin!)
+🔹 **Mirror 1/2/3:** Sau khi copy ảnh A→B, user đã \`/trigger\` (hoặc userbot nếu \`/trigger ... self\`) reply ảnh ở B bằng \`1\` / \`2\` / \`3\` → bot reply cùng số vào ảnh gốc ở A
+/trigger [id_nhóm_B] [userId|self] — Thêm người được mirror 👑
+/trigger off [id_nhóm_B] [userId|self] — Xóa
+/trigger list [id_nhóm_B] — Xem danh sách
 
 **Khác biệt Forward vs Forward2:**
 🔹 **Forward:** Nhóm A → Nhóm B (cụ thể, mọi user)
@@ -1652,6 +1730,145 @@ Admin reply vào tin nhắn bất kỳ và nhập ${Utils.hasEmoji(trigger) ? `e
     }
   }
 
+  // /trigger — whitelist user được mirror reply 1/2/3 từ nhóm B về A
+  async handleTriggerCommand(args, chatId, messageId) {
+    try {
+      const helpText = `❗ **Cú pháp /trigger** (👑 admin)
+
+Thêm người được mirror 1/2/3 ở nhóm B:
+\`/trigger [id_nhóm_B] [userId hoặc self/me]\`
+
+Xóa:
+\`/trigger off [id_nhóm_B] [userId hoặc self/me]\`
+
+Xem danh sách:
+\`/trigger list\`
+\`/trigger list [id_nhóm_B]\`
+
+**Ví dụ:**
+\`/trigger -1001234567890 123456789\`
+\`/trigger -1001234567890 self\`
+\`/trigger off -1001234567890 123456789\`
+\`/trigger list -1001234567890\`
+
+**Lưu ý:** Chỉ user trong list (kể cả userbot nếu dùng \`self\`) reply \`1\`/\`2\`/\`3\` vào ảnh đã setforward ở B mới mirror về A.`;
+
+      if (!args || args.length === 0) {
+        await this.sendReply(chatId, messageId, helpText);
+        return;
+      }
+
+      const me = await this.getMeCached();
+      const sub = String(args[0]).toLowerCase();
+
+      if (sub === 'list') {
+        const filterGid = args[1] ? String(args[1]) : null;
+        if (filterGid && !Utils.isValidGroupId(filterGid)) {
+          await this.sendReply(chatId, messageId, '❌ ID nhóm không hợp lệ (phải bắt đầu bằng -)');
+          return;
+        }
+
+        const mt = this.settings.mirrorTriggers || {};
+        let entries = Object.entries(mt).filter(([, v]) => Array.isArray(v) && v.length);
+        if (filterGid) {
+          const alts = new Set(Utils.getAlternateGroupIds(filterGid));
+          entries = entries.filter(([gid]) => alts.has(gid));
+        }
+
+        if (!entries.length) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            filterGid
+              ? `📝 Chưa có trigger cho nhóm \`${filterGid}\``
+              : '📝 Chưa có mirror trigger nào'
+          );
+          return;
+        }
+
+        let msg = '📋 **Mirror triggers:**\n\n';
+        for (const [gid, users] of entries) {
+          msg += `**Nhóm** \`${gid}\`\n`;
+          for (const u of users) {
+            msg += `  • \`${u}\`\n`;
+          }
+          msg += '\n';
+        }
+        await this.sendReply(chatId, messageId, msg.trim());
+        return;
+      }
+
+      if (sub === 'off' || sub === 'remove' || sub === 'del') {
+        if (args.length < 3) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❗ Sử dụng: /trigger off [id_nhóm_B] [userId hoặc self]'
+          );
+          return;
+        }
+        const groupId = args[1];
+        const userRef = args[2];
+        if (!Utils.isValidGroupId(groupId)) {
+          await this.sendReply(chatId, messageId, '❌ ID nhóm không hợp lệ (phải bắt đầu bằng -)');
+          return;
+        }
+        const result = Utils.removeMirrorTriggerUser(this.settings, groupId, userRef, me);
+        if (!result.success) {
+          await this.sendReply(chatId, messageId, `❌ ${result.message}`);
+          return;
+        }
+        Utils.saveSettings(this.settings);
+        await this.sendReply(
+          chatId,
+          messageId,
+          `✅ Đã xóa trigger \`${result.userId}\` khỏi nhóm \`${groupId}\``
+        );
+        return;
+      }
+
+      if (args.length < 2) {
+        await this.sendReply(chatId, messageId, helpText);
+        return;
+      }
+
+      const groupId = args[0];
+      const userRef = args[1];
+      if (!Utils.isValidGroupId(groupId)) {
+        await this.sendReply(chatId, messageId, '❌ ID nhóm không hợp lệ (phải bắt đầu bằng -)');
+        return;
+      }
+
+      const isSelf =
+        ['self', 'me', '@me'].includes(String(userRef).toLowerCase());
+      if (!isSelf && !/^\d+$/.test(String(userRef).trim()) && !String(userRef).startsWith('@')) {
+        await this.sendReply(
+          chatId,
+          messageId,
+          '❌ User phải là ID số, @username, hoặc self/me (userbot)'
+        );
+        return;
+      }
+
+      const result = Utils.addMirrorTriggerUser(this.settings, groupId, userRef, me);
+      if (!result.success) {
+        await this.sendReply(chatId, messageId, `❌ ${result.message}`);
+        return;
+      }
+      Utils.saveSettings(this.settings);
+      const label = isSelf ? `${result.userId} (userbot)` : result.userId;
+      await this.sendReply(
+        chatId,
+        messageId,
+        `✅ Đã thêm trigger mirror:\n📋 Nhóm B: \`${groupId}\`\n👤 User: \`${label}\``
+      );
+      Utils.log(`🟢 Mirror trigger: ${groupId} += ${result.userId}`);
+    } catch (error) {
+      Utils.log(`❌ Lỗi /trigger: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi cấu hình trigger');
+    }
+  }
+
   // Xử lý command /setforward
   async handleSetForwardCommand(args, chatId, messageId, originalMessage) {
     try {
@@ -1671,7 +1888,9 @@ Admin reply vào tin nhắn bất kỳ và nhập ${Utils.hasEmoji(trigger) ? `e
 **Chú ý:**
 - ID nhóm phải bắt đầu bằng dấu "-"
 - Trigger có thể là text hoặc emoji 
-- Khi ai đó reply tin nhắn và nhập trigger, tin nhắn sẽ được tự động copy`;
+- Khi ai đó reply tin nhắn và nhập trigger, tin nhắn sẽ được tự động copy
+- Sau khi copy ảnh sang nhóm B: user đã /trigger reply \`1\` / \`2\` / \`3\` vào ảnh ở B → bot reply cùng số vào ảnh gốc ở A
+- Cấu hình: \`/trigger [id_nhóm_B] [userId]\` hoặc \`self\` cho userbot`;
         
         await this.sendReply(chatId, messageId, helpText);
         return;
@@ -1721,7 +1940,11 @@ Admin reply vào tin nhắn bất kỳ và nhập ${Utils.hasEmoji(trigger) ? `e
 👤 **Tạo bởi:** ${createdBy}
 
 **Cách sử dụng:**
-Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emoji ${trigger}` : `"${trigger}"`}`;
+Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emoji ${trigger}` : `"${trigger}"`}
+(hoặc admin react emoji trigger)
+
+**Mirror:** User đã \`/trigger\` reply \`1\` / \`2\` / \`3\` vào ảnh ở B → bot reply cùng số vào ảnh gốc ở A
+(\`/trigger ${destGroupId} [userId|self]\`)`;
 
         await this.sendReply(chatId, messageId, successMsg);
         Utils.log(`🟢 Forward rule added: ${sourceGroupId} -> ${destGroupId} (trigger: ${trigger})`);
@@ -2069,6 +2292,62 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     return false;
   }
 
+  /**
+   * Setforward mirror: ở nhóm B reply ảnh Y bằng 1/2/3 → bot reply cùng số vào ảnh X ở A.
+   * Chỉ user (hoặc bot) đã /trigger cho nhóm B mới được kích.
+   * @returns {boolean} true nếu đã mirror (hoặc đã xử lý/skip có chủ đích)
+   */
+  async checkForwardMirrorReply(message) {
+    try {
+      if (!message) return false;
+
+      const text = (message.message || message.text || '').trim();
+      if (!Utils.isForwardMirrorConfirmText(text)) return false;
+
+      const replyToMsgId = message.replyTo?.replyToMsgId;
+      if (!replyToMsgId) return false;
+
+      const destChatId = Utils.getMessageChatId(message) || String(message.chatId || '');
+      if (!destChatId) return false;
+
+      const mapping = this.lookupForwardMirror(destChatId, replyToMsgId);
+      if (!mapping) return false;
+
+      const me = await this.getMeCached();
+      let senderUserId = Utils.getMessageSenderUserId(message);
+      if (!senderUserId && message.out) {
+        senderUserId = Utils.normalizeUserId(me?.id);
+      }
+      if (!Utils.isMirrorTriggerUser(this.settings, destChatId, senderUserId, me, message.sender)) {
+        Utils.log(
+          `⏭️ Forward mirror: bỏ qua — user ${senderUserId || '?'} chưa /trigger nhóm ${destChatId}`
+        );
+        return false;
+      }
+
+      const { sourceGroupId, sourceMsgId } = mapping;
+      const mirrorKey = `mirror_${sourceGroupId}_${sourceMsgId}_${text}`;
+      if (this.processedMessages.has(mirrorKey)) {
+        Utils.log(`⏭️ Forward mirror: đã reply ${text} cho ${sourceGroupId}/${sourceMsgId}`);
+        return true;
+      }
+      this.processedMessages.set(mirrorKey, Date.now());
+
+      await this.client.sendMessage(sourceGroupId, {
+        message: text,
+        replyTo: sourceMsgId,
+      });
+
+      Utils.log(
+        `↩️ Forward mirror: ${destChatId}/${replyToMsgId} "${text}" (by ${senderUserId}) → ${sourceGroupId}/${sourceMsgId}`
+      );
+      return true;
+    } catch (error) {
+      Utils.log(`❌ Lỗi forward mirror reply: ${error.message}`);
+      return false;
+    }
+  }
+
   // Kiểm tra và xử lý auto-forward message
   async checkAutoForwardMessage(message) {
     try {
@@ -2134,6 +2413,15 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
       
       if (result.success) {
+        if (!isForward2 && result.photoMessageIds?.length) {
+          this.registerForwardMirror({
+            sourceGroupId: activeRule.sourceGroupId || chatId,
+            sourceMsgId: replyToMsgId,
+            destGroupId: activeRule.destGroupId,
+            destMsgIds: result.photoMessageIds,
+          });
+        }
+
         await this.triggerPic2ForForwardedPhotos(activeRule.destGroupId, result.photoMessageIds);
 
         const messageType = Utils.getMessageType(originalMessage);
@@ -2236,6 +2524,15 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       
       const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
       if (result.success) {
+        if (!isForward2 && result.photoMessageIds?.length) {
+          this.registerForwardMirror({
+            sourceGroupId: activeRule.sourceGroupId || chatId,
+            sourceMsgId: originalMessage.id,
+            destGroupId: activeRule.destGroupId,
+            destMsgIds: result.photoMessageIds,
+          });
+        }
+
         await this.triggerPic2ForForwardedPhotos(activeRule.destGroupId, result.photoMessageIds);
 
         const reactionType = isForward2 ? 'global reaction' : 'reaction';
