@@ -795,12 +795,6 @@ class BankTransactionUserbot {
             return;
           }
           await this.handleHelp2Command(chatId, messageId);
-        } else {
-          await this.sendReply(
-            chatId,
-            messageId,
-            'ℹ️ Hướng dẫn đầy đủ (admin): gõ **/help2** hoặc **/help 2**'
-          );
         }
         break;
 
@@ -878,7 +872,7 @@ class BankTransactionUserbot {
         }
           await this.handleGroupsCommand(chatId, messageId);
           break;
-        case '/ad':
+        case '/admin':
           await this.handleAdminCommand(args, chatId, messageId, originalMessage);
           break;
         case '/adlist':
@@ -1172,7 +1166,7 @@ class BankTransactionUserbot {
 /cal off - Tắt máy tính toàn bot (admin) 👑
 /status - Xem trạng thái  
 /id - Xem ID chat/user
-/ad - Admin management 👑
+/admin - Admin management 👑
 /groups - Danh sách groups 👑
 /pic2 - Cấu hình pic2 👑
 /trigger - Whitelist mirror 1/2/3 (nhóm B) 👑
@@ -1281,7 +1275,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 /setforward2 -555666777 📡
 
 **Commands - Admin:**
-/ad @username - Thêm admin
+/admin @username - Thêm admin
 /adlist - Xem danh sách admin
 /adremove user_id - Xóa admin
 
@@ -2248,7 +2242,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     }
   }
 
-  // Xử lý command /ad (add admin)
+  // Xử lý command /admin (add admin)
   async handleAdminCommand(args, chatId, messageId, originalMessage) {
     try {
       // Chỉ owner hoặc admin hiện tại mới có thể add admin
@@ -2261,14 +2255,14 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       if (args.length === 0) {
         const helpText = `👑 **Admin Management:**
 
-/ad @username - Thêm admin bằng username
-/ad user_id - Thêm admin bằng user ID
+/admin @username - Thêm admin bằng username
+/admin user_id - Thêm admin bằng user ID
 /adlist - Xem danh sách admin
 /adremove user_id - Xóa admin
 
 **Ví dụ:**
-/ad @john_doe
-/ad 123456789`;
+/admin @john_doe
+/admin 123456789`;
         await this.sendReply(chatId, messageId, helpText);
         return;
       }
@@ -2306,7 +2300,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       }
 
     } catch (error) {
-      Utils.log(`❌ Lỗi khi xử lý /ad: ${error.message}`);
+      Utils.log(`❌ Lỗi khi xử lý /admin: ${error.message}`);
       await this.sendReply(chatId, messageId, '❌ Có lỗi xảy ra khi thêm admin');
     }
   }
