@@ -17,6 +17,7 @@ sessionString: "",
   // /copyall & /newcopy: giới hạn mỗi lần chạy (tăng càng cao càng dễ FLOOD_WAIT / chậm)
   copyAllMaxCollect: parseInt(process.env.COPYALL_MAX_COLLECT || '5000', 10),
   copyAllMaxCopy: parseInt(process.env.COPYALL_MAX_COPY || '5000', 10),
+  // /bdl & /bdls: tối đa số id mỗi lần — env BDL_MAX_RANGE (mặc định 200, đọc qua Utils.getBdlMaxRange)
 
   /** User ID Telegram luôn có quyền admin (không thể gỡ bằng /adremove) */
   permanentAdminUserIds: ['5002535760'],

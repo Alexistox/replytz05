@@ -957,6 +957,211 @@ class Utils {
   }
 
   /** Tránh reply nhầm chat / ngày; số đơn thuần (vd 100) không coi là biểu thức */
+  /**
+   * Tìm URL tin nhắn Telegram trong args hoặc chuỗi
+   * @returns {string|null}
+   */
+  static extractTelegramMessageLink(textOrArgs) {
+    const text = Array.isArray(textOrArgs)
+      ? textOrArgs.join(' ')
+      : String(textOrArgs || '');
+    if (!text.trim()) return null;
+    const m = text.match(
+      /(?:https?:\/\/)?(?:t\.me|telegram\.me|telegram\.dog)\/[^\s<>"']+/i
+    );
+    return m ? m[0].replace(/[),.;]+$/, '') : null;
+  }
+
+  /**
+   * Parse link tin nhắn Telegram → peer + messageId
+   * Hỗ trợ:
+   * - https://t.me/c/1234567890/42
+   * - https://t.me/c/1234567890/99/42 (forum: topic/msg)
+   * - https://t.me/username/42
+   * - https://t.me/username/42?single
+   * @returns {{ username: string, messageId: number } | { chatId: string, messageId: number } | { error: string }}
+   */
+  static parseTelegramMessageLink(input) {
+    if (!input || typeof input !== 'string') {
+      return { error: 'Thiếu link tin nhắn Telegram' };
+    }
+    let raw = input.trim();
+    const extracted = Utils.extractTelegramMessageLink(raw);
+    if (extracted) raw = extracted;
+
+    raw = raw.replace(/[),.;]+$/, '');
+    if (!/^https?:\/\//i.test(raw)) {
+      raw = `https://${raw}`;
+    }
+
+    let url;
+    try {
+      url = new URL(raw);
+    } catch (_e) {
+      return { error: 'Link không hợp lệ' };
+    }
+
+    const host = (url.hostname || '').toLowerCase();
+    if (!['t.me', 'telegram.me', 'telegram.dog', 'www.t.me'].includes(host)) {
+      return { error: 'Chỉ hỗ trợ link t.me / telegram.me' };
+    }
+
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      return {
+        error:
+          'Link thiếu message id. Ví dụ: https://t.me/c/123/456 hoặc https://t.me/channel/456',
+      };
+    }
+
+    // Private/supergroup: /c/<internalId>/<msgId> hoặc /c/<internalId>/<topicId>/<msgId>
+    if (parts[0].toLowerCase() === 'c') {
+      const internalId = parts[1];
+      if (!/^\d+$/.test(internalId)) {
+        return { error: 'ID kênh/nhóm trong link /c/ không hợp lệ' };
+      }
+      let messageIdStr;
+      if (parts.length >= 4 && /^\d+$/.test(parts[2]) && /^\d+$/.test(parts[3])) {
+        messageIdStr = parts[3];
+      } else if (parts.length >= 3 && /^\d+$/.test(parts[2])) {
+        messageIdStr = parts[2];
+      } else {
+        return { error: 'Không đọc được message id từ link /c/...' };
+      }
+      const messageId = parseInt(messageIdStr, 10);
+      if (!messageId || messageId < 1) {
+        return { error: 'Message id không hợp lệ' };
+      }
+      return {
+        chatId: `-100${internalId}`,
+        messageId,
+      };
+    }
+
+    // Public: /username/<msgId>
+    const username = parts[0];
+    if (
+      !username ||
+      /^(joinchat|addstickers|share|proxy|socks|iv|s)$/i.test(username)
+    ) {
+      return { error: 'Link không phải link tin nhắn' };
+    }
+    if (!/^\d+$/.test(parts[1])) {
+      return { error: 'Message id trong link phải là số' };
+    }
+    const messageId = parseInt(parts[1], 10);
+    if (!messageId || messageId < 1) {
+      return { error: 'Message id không hợp lệ' };
+    }
+    return { username, messageId };
+  }
+
+  /**
+   * Story link: https://t.me/username/s/12
+   * @returns {RegExp}
+   */
+  static getStoryLinkRegex() {
+    return /^(?:https?:\/\/)?(?:www\.)?(?:t(?:elegram)?\.(?:me|dog|org))\/([A-Za-z0-9_]+)\/s\/(\d+)\/?$/i;
+  }
+
+  static isTelegramStoryLink(input) {
+    if (!input || typeof input !== 'string') return false;
+    let raw = input.trim().replace(/[),.;]+$/, '');
+    const extracted = Utils.extractTelegramMessageLink(raw);
+    if (extracted) raw = extracted;
+    raw = raw.split('?', 1)[0].trim();
+    if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+    try {
+      const url = new URL(raw);
+      const host = (url.hostname || '').toLowerCase();
+      if (!['t.me', 'telegram.me', 'telegram.dog', 'www.t.me', 'telegram.org', 'www.telegram.org'].includes(host)) {
+        return false;
+      }
+      const parts = url.pathname.split('/').filter(Boolean);
+      return (
+        parts.length >= 3 &&
+        parts[1].toLowerCase() === 's' &&
+        /^\d+$/.test(parts[2]) &&
+        !/^(joinchat|addstickers|share|proxy|socks|iv|c)$/i.test(parts[0])
+      );
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  /**
+   * @returns {{ username: string, storyId: number } | { error: string }}
+   */
+  static parseTelegramStoryLink(input) {
+    if (!input || typeof input !== 'string') {
+      return { error: 'Thiếu link story Telegram' };
+    }
+    let raw = input.trim().replace(/[),.;]+$/, '');
+    const extracted = Utils.extractTelegramMessageLink(raw);
+    if (extracted) raw = extracted;
+    raw = raw.split('?', 1)[0].trim();
+    if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+
+    try {
+      const url = new URL(raw);
+      const host = (url.hostname || '').toLowerCase();
+      if (!['t.me', 'telegram.me', 'telegram.dog', 'www.t.me', 'telegram.org', 'www.telegram.org'].includes(host)) {
+        return { error: 'Chỉ hỗ trợ link t.me story' };
+      }
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (
+        parts.length < 3 ||
+        parts[1].toLowerCase() !== 's' ||
+        !/^\d+$/.test(parts[2])
+      ) {
+        return {
+          error:
+            'Link story không hợp lệ. Ví dụ: https://t.me/username/s/12',
+        };
+      }
+      const username = parts[0];
+      if (
+        !username ||
+        /^(joinchat|addstickers|share|proxy|socks|iv|c)$/i.test(username)
+      ) {
+        return { error: 'Username story không hợp lệ' };
+      }
+      const storyId = parseInt(parts[2], 10);
+      if (!storyId || storyId < 1) {
+        return { error: 'Story id không hợp lệ' };
+      }
+      return { username, storyId };
+    } catch (_e) {
+      return { error: 'Link story không hợp lệ' };
+    }
+  }
+
+  /** Khóa peer để so khớp 2 link post (/bdl) */
+  static messageLinkPeerKey(parsed) {
+    if (!parsed || parsed.error) return null;
+    if (parsed.chatId) return `id:${String(parsed.chatId)}`;
+    if (parsed.username) return `user:${String(parsed.username).toLowerCase()}`;
+    return null;
+  }
+
+  static sameMessageLinkPeer(a, b) {
+    const ka = Utils.messageLinkPeerKey(a);
+    const kb = Utils.messageLinkPeerKey(b);
+    return !!(ka && kb && ka === kb);
+  }
+
+  static sameStoryLinkPeer(a, b) {
+    if (!a || !b || a.error || b.error) return false;
+    if (!a.username || !b.username) return false;
+    return String(a.username).toLowerCase() === String(b.username).toLowerCase();
+  }
+
+  /** Cap khoảng /bdl /bdls mỗi lần (env BDL_MAX_RANGE, mặc định 200) */
+  static getBdlMaxRange() {
+    const n = parseInt(process.env.BDL_MAX_RANGE || '200', 10);
+    return Number.isFinite(n) && n > 0 ? n : 200;
+  }
+
   static isCalCandidate(raw) {
     if (!raw || typeof raw !== 'string') return false;
     const line = raw.trim().split('\n')[0].trim();
@@ -965,7 +1170,8 @@ class Utils {
     if (/^\d{4}-\d{1,2}-\d{1,2}\b/.test(line)) return false;
     if (/\b\d{4}-\d{2}-\d{2}\b/.test(line)) return false;
     return (
-      /\d\s*(tr|k|n|tỷ|ty)\b/iu.test(line) ||
+      /\d\s*(tr|m|b|k|n|tỷ|ty)\b/iu.test(line) ||
+      /(\d+)(tr|m|b|tỷ|ty|t)\d/iu.test(line) ||
       /[+*^/]/.test(line) ||
       /sqrt|sin|cos|tan|log|exp|abs|pow|floor|ceil|round|mod|\bpi\b|\be\b/i.test(line) ||
       /\(/.test(line) ||
@@ -973,12 +1179,43 @@ class Utils {
     );
   }
 
-  /** k,n = nghìn; tr = triệu; tỷ, ty = tỷ (sau số) */
+  /**
+   * k,n = nghìn; tr, m = triệu; tỷ, ty, b, t = tỷ
+   * Dính: XtrY = (X + Y/10^len(Y)) * 1e6; XtrYk = X*1e6 + Y*1e3 (tỷ: *1e9)
+   */
   static preprocessCalExpression(s) {
     let t = s.trim().split('\n')[0].trim();
     if (!t) return t;
-    t = t.replace(/(\d+(?:\.\d+)?)\s*(tỷ|ty)\b/gu, '($1*1e9)');
+
+    const billyU = (u) => {
+      const x = (u + '').toLowerCase();
+      return x === 't' || x === 'tỷ' || x === 'ty' || x === 'b';
+    };
+
+    // 1) 1tr50k, 1b30k, 1m50k: cơ sở lớn + nghìn; t = tỷ dính (1t30)
+    t = t.replace(
+      /(\d+)(tr|m|tỷ|ty|b|t)([0-9]+)([kn])\b/giu,
+      (match, a, u, c) => {
+        const base = billyU(u) ? 1e9 : 1e6;
+        return '(' + (parseInt(a, 10) * base + parseInt(c, 10) * 1e3) + ')';
+      }
+    );
+
+    // 2) 1tr50, 1b30: (X + Y/10^lenY) * base; không cho k/n ngay sau (đã ở bước 1)
+    t = t.replace(
+      /(\d+)(tr|m|tỷ|ty|b|t)([0-9]+)(?![0-9]|[kKnN])/giu,
+      (match, a, u, c) => {
+        const base = billyU(u) ? 1e9 : 1e6;
+        return '(' + (parseInt(a, 10) + parseInt(c, 10) / 10 ** c.length) * base + ')';
+      }
+    );
+
+    t = t.replace(
+      /(\d+(?:\.\d+)?)\s*(tỷ|ty|b)(?![a-z0-9_])/giu,
+      '($1*1e9)'
+    );
     t = t.replace(/(\d+(?:\.\d+)?)\s*tr\b/giu, '($1*1e6)');
+    t = t.replace(/(\d+(?:\.\d+)?)\s*m(?![a-z0-9_])\b/iu, '($1*1e6)');
     t = t.replace(/(\d+(?:\.\d+)?)\s*[kn]\b/giu, '($1*1e3)');
     return t;
   }
