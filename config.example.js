@@ -1,17 +1,14 @@
+require('dotenv').config({ quiet: true });
+
 module.exports = {
-  // Telegram API credentials
-  // 📚 Hướng dẫn lấy API credentials:
-  // 1. Truy cập: https://my.telegram.org/apps
-  // 2. Đăng nhập bằng số điện thoại Telegram
-  // 3. Tạo ứng dụng mới
-  // 4. Copy api_id và api_hash vào đây
-  // Docker: có thể đặt TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE_NUMBER trong docker-compose.yml
-  apiId: process.env.TELEGRAM_API_ID || 'YOUR_API_ID',
-  apiHash: process.env.TELEGRAM_API_HASH || 'YOUR_API_HASH',
-  phoneNumber: process.env.TELEGRAM_PHONE_NUMBER || 'YOUR_PHONE_NUMBER',
+  // Telegram API credentials — copy .env.example thành .env rồi điền:
+  // https://my.telegram.org/apps
+  apiId: process.env.TELEGRAM_API_ID || '',
+  apiHash: process.env.TELEGRAM_API_HASH || '',
+  phoneNumber: process.env.TELEGRAM_PHONE_NUMBER || '',
 
   sessionFile: process.env.TELEGRAM_SESSION_FILE || './telegram.session',
-  sessionString: '',
+  sessionString: process.env.TELEGRAM_SESSION_STRING || '',
   
   // Đường dẫn file settings
   settingsFile: './settings.json',

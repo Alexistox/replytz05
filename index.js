@@ -123,7 +123,7 @@ class BankTransactionUserbot {
     return loaded;
   }
 
-  /** Lưu session sau đăng nhập: ghi file + đồng bộ dòng sessionString trong config.js (JSON.stringify, tránh lỗi ký tự đặc biệt) */
+  /** Lưu session sau đăng nhập: ghi file session + TELEGRAM_SESSION_STRING trong .env */
   async persistSession(sessionString) {
     const fsp = require('fs').promises;
     const path = require('path');
@@ -140,29 +140,29 @@ class BankTransactionUserbot {
       Utils.log(`❌ Không ghi được file session: ${e.message}`);
     }
     config.sessionString = sessionString;
-    const patched = this.patchConfigSessionLine(sessionString);
+    const patched = this.patchEnvSessionLine(sessionString);
     if (patched) {
-      Utils.log('💾 Đã đồng bộ session vào config.js');
+      Utils.log('💾 Đã đồng bộ session vào .env');
     }
   }
 
-  patchConfigSessionLine(sessionString) {
+  patchEnvSessionLine(sessionString) {
     try {
       const fs = require('fs');
       const path = require('path');
-      const configPath = path.join(__dirname, 'config.js');
-      let content = fs.readFileSync(configPath, 'utf8');
-      const line = `sessionString: ${JSON.stringify(sessionString)},`;
-      if (/^\s*sessionString:\s*.+$/m.test(content)) {
-        content = content.replace(/^\s*sessionString:\s*.+$/m, line);
+      const envPath = path.join(__dirname, '.env');
+      const line = `TELEGRAM_SESSION_STRING=${JSON.stringify(sessionString)}`;
+      let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+      if (/^TELEGRAM_SESSION_STRING=.*$/m.test(content)) {
+        content = content.replace(/^TELEGRAM_SESSION_STRING=.*$/m, line);
       } else {
-        Utils.log('⚠️ Không tìm thấy dòng sessionString trong config.js để cập nhật');
-        return false;
+        if (content && !content.endsWith('\n')) content += '\n';
+        content += `${line}\n`;
       }
-      fs.writeFileSync(configPath, content, 'utf8');
+      fs.writeFileSync(envPath, content, 'utf8');
       return true;
     } catch (e) {
-      Utils.log(`⚠️ Không ghi config.js (volume chỉ đọc?): ${e.message}`);
+      Utils.log(`⚠️ Không ghi .env: ${e.message}`);
       return false;
     }
   }
@@ -171,13 +171,13 @@ class BankTransactionUserbot {
   async initializeClient() {
     try {
       // Kiểm tra API credentials
-      if (config.apiId === 'YOUR_API_ID' || config.apiHash === 'YOUR_API_HASH') {
-        throw new Error('Vui lòng cập nhật API credentials trong config.js');
+      if (!config.apiId || !config.apiHash) {
+        throw new Error('Vui lòng đặt TELEGRAM_API_ID và TELEGRAM_API_HASH trong file .env');
       }
 
       // Kiểm tra số điện thoại
-      if (config.phoneNumber === 'YOUR_PHONE_NUMBER') {
-        throw new Error('Vui lòng cập nhật số điện thoại trong config.js');
+      if (!config.phoneNumber) {
+        throw new Error('Vui lòng đặt TELEGRAM_PHONE_NUMBER trong file .env');
       }
 
       const loadedSession = this.loadSessionStringFromDisk();
@@ -227,7 +227,7 @@ class BankTransactionUserbot {
       // Tự lưu session sau đăng nhập (lần đầu hoặc khi session đổi so với file/config)
       const currentSession = this.client.session.save();
       if (currentSession && currentSession.length > 10 && currentSession !== loadedSession) {
-        Utils.log('💾 Session mới — đang lưu tự động (file + config.js)...');
+        Utils.log('💾 Session mới — đang lưu tự động (file session + .env)...');
         await this.persistSession(currentSession);
       }
 

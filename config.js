@@ -1,15 +1,23 @@
-module.exports = {
-  // Telegram API credentials (https://my.telegram.org/apps)
-  // Docker: đặt TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE_NUMBER trong docker-compose.yml
-  apiId: process.env.TELEGRAM_API_ID || '30xxx',
-  apiHash: process.env.TELEGRAM_API_HASH || '41ddc59d6993fb9623f65xxxxx',
-  phoneNumber: process.env.TELEGRAM_PHONE_NUMBER || '+857234594',
+require('dotenv').config({ quiet: true });
 
-  // File lưu session sau đăng nhập (ưu tiên đọc file này nếu có). Docker: có thể TELEGRAM_SESSION_FILE
+function envList(name) {
+  return (process.env[name] || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+module.exports = {
+  // Telegram API credentials (https://my.telegram.org/apps) — điền trong file .env
+  apiId: process.env.TELEGRAM_API_ID || '',
+  apiHash: process.env.TELEGRAM_API_HASH || '',
+  phoneNumber: process.env.TELEGRAM_PHONE_NUMBER || '',
+
+  // File lưu session sau đăng nhập (ưu tiên đọc file này nếu có). Có thể đổi bằng TELEGRAM_SESSION_FILE
   sessionFile: process.env.TELEGRAM_SESSION_FILE || './telegram.session',
 
-  // Session string (dự phòng / đồng bộ; bot tự ghi file + config.js sau login)
-sessionString: "",
+  // Session string (dự phòng). Ưu tiên file telegram.session; có thể đặt TELEGRAM_SESSION_STRING trong .env
+  sessionString: process.env.TELEGRAM_SESSION_STRING || '',
 
   // Settings file path
   settingsFile: './settings.json',
@@ -19,8 +27,8 @@ sessionString: "",
   copyAllMaxCopy: parseInt(process.env.COPYALL_MAX_COPY || '5000', 10),
   // /bdl & /bdls: tối đa số id mỗi lần — env BDL_MAX_RANGE (mặc định 200, đọc qua Utils.getBdlMaxRange)
 
-  /** User ID Telegram luôn có quyền admin (không thể gỡ bằng /adremove) */
-  permanentAdminUserIds: ['5002535760'],
+  /** User ID Telegram luôn có quyền admin (không thể gỡ bằng /adremove). .env: PERMANENT_ADMIN_USER_IDS */
+  permanentAdminUserIds: envList('PERMANENT_ADMIN_USER_IDS'),
 
   // Default settings
   defaultSettings: {

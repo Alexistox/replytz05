@@ -7,16 +7,11 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "node test.js",
-    "test-duplicate": "node test-duplicate.js",
-    "docker:build": "docker compose build",
-    "docker:up": "docker compose up -d",
-    "docker:logs": "docker compose logs -f replytz-userbot",
-    "docker:down": "docker compose down"
+    "test-duplicate": "node test-duplicate.js"
   },
   "dependencies": {
-    "fs": "^0.0.1-security",
+    "dotenv": "^18.0.6",
     "mathjs": "^14.9.1",
-    "path": "^0.12.7",
     "telegram": "^2.22.2"
   },
   "devDependencies": {
