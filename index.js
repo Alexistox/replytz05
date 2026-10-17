@@ -2476,8 +2476,9 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       const trigger = Utils.normalizeTrigger(messageText);
       const senderId = message.senderId?.toString();
 
-      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B, có thể nhiều nhóm B)
-      const rules = Utils.findForwardRules(this.settings, chatId, trigger);
+      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B)
+      const rule = Utils.findForwardRule(this.settings, chatId, trigger);
+      const rules = rule ? [rule] : [];
       
       // 2. Kiểm tra Forward2 rule (bất kỳ nhóm → nhóm đích, chỉ admin)
       const forward2Rule = Utils.findForward2Rule(this.settings, trigger);
@@ -2609,8 +2610,9 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
       Utils.log(`🎯 Admin ${reactorUserId} reaction emoji: ${reactionEmoji} in chat ${chatId}`);
 
-      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B, có thể nhiều nhóm B)
-      const rules = Utils.findForwardRules(this.settings, chatId, reactionEmoji);
+      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B)
+      const rule = Utils.findForwardRule(this.settings, chatId, reactionEmoji);
+      const rules = rule ? [rule] : [];
       
       // 2. Kiểm tra Forward2 rule (bất kỳ nhóm → nhóm đích, chỉ admin)
       const forward2Rule = Utils.findForward2Rule(this.settings, reactionEmoji);

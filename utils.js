@@ -271,27 +271,29 @@ class Utils {
     return { success: false, message: 'Không tìm thấy rule này!' };
   }
 
-  // Tìm mọi forward rule phù hợp (cùng nhóm nguồn + trigger có thể có nhiều nhóm đích)
-  static findForwardRules(settings, sourceGroupId, trigger) {
+  // Tìm forward rule phù hợp; cùng nhóm nguồn + trigger thì rule tạo sau được ưu tiên
+  static findForwardRule(settings, sourceGroupId, trigger) {
     if (!settings.forwardRules) {
-      return [];
+      return null;
     }
 
     const normalizedTrigger = Utils.normalizeTrigger(trigger);
-    const seenDest = new Set();
+    let latest = null;
 
-    return settings.forwardRules.filter(rule => {
+    for (const rule of settings.forwardRules) {
       if (
         rule.sourceGroupId !== sourceGroupId ||
         rule.trigger !== normalizedTrigger ||
-        rule.status !== "active" ||
-        seenDest.has(rule.destGroupId)
+        rule.status !== "active"
       ) {
-        return false;
+        continue;
       }
-      seenDest.add(rule.destGroupId);
-      return true;
-    });
+      if (!latest || (rule.createdTime || '') >= (latest.createdTime || '')) {
+        latest = rule;
+      }
+    }
+
+    return latest;
   }
 
   // Lấy tất cả active forward rules
