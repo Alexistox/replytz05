@@ -2476,23 +2476,23 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       const trigger = Utils.normalizeTrigger(messageText);
       const senderId = message.senderId?.toString();
 
-      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B)
-      const rule = Utils.findForwardRule(this.settings, chatId, trigger);
+      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B, có thể nhiều nhóm B)
+      const rules = Utils.findForwardRules(this.settings, chatId, trigger);
       
       // 2. Kiểm tra Forward2 rule (bất kỳ nhóm → nhóm đích, chỉ admin)
       const forward2Rule = Utils.findForward2Rule(this.settings, trigger);
       
       // Nếu không có rule nào thì return
-      if (!rule && !forward2Rule) return;
+      if (!rules.length && !forward2Rule) return;
       
       // Nếu có forward2 rule nhưng user không phải admin thì chỉ xử lý forward thường
-      let activeRule = rule;
+      let activeRules = rules;
       let isForward2 = false;
       
       if (forward2Rule && this.isOwnerOrAdmin(senderId)) {
-        activeRule = forward2Rule;
+        activeRules = [forward2Rule];
         isForward2 = true;
-      } else if (!rule) {
+      } else if (!rules.length) {
         // Nếu chỉ có forward2 rule mà user không phải admin thì return
         return;
       }
@@ -2517,62 +2517,65 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         return;
       }
 
-      // Tạo unique key để tránh duplicate auto-forward
       const forwardType = isForward2 ? 'forward2' : 'forward';
-      const autoForwardKey = `${forwardType}_${chatId}_${replyToMsgId}_${trigger}`;
-      if (this.processedMessages.has(autoForwardKey)) {
-        return;
-      }
+      const messageType = Utils.getMessageType(originalMessage);
+      const originalSender = originalMessage.sender?.username ? 
+        `@${originalMessage.sender.username}` : 
+        originalMessage.sender?.firstName || 'Unknown';
+      const forwardPrefix = isForward2 ? '🌐 Forward2' : '🤖 Forward';
 
-      // Mark as processed
-      this.processedMessages.set(autoForwardKey, Date.now());
-
-      // Copy tin nhắn
-      const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
-      
-      if (result.success) {
-        if (!isForward2 && result.photoMessageIds?.length) {
-          this.registerForwardMirror({
-            sourceGroupId:
-              Utils.getMessageChatId(originalMessage) ||
-              activeRule.sourceGroupId ||
-              chatId,
-            sourceMsgId: originalMessage.id || replyToMsgId,
-            destGroupId: activeRule.destGroupId,
-            destMsgIds: result.photoMessageIds,
-          });
+      for (const activeRule of activeRules) {
+        // Tạo unique key để tránh duplicate auto-forward (theo từng nhóm đích)
+        const autoForwardKey = `${forwardType}_${chatId}_${replyToMsgId}_${trigger}_${activeRule.destGroupId}`;
+        if (this.processedMessages.has(autoForwardKey)) {
+          continue;
         }
 
-        await this.triggerPic2ForForwardedPhotos(activeRule.destGroupId, result.photoMessageIds);
+        // Mark as processed
+        this.processedMessages.set(autoForwardKey, Date.now());
 
-        const messageType = Utils.getMessageType(originalMessage);
-        const originalSender = originalMessage.sender?.username ? 
-          `@${originalMessage.sender.username}` : 
-          originalMessage.sender?.firstName || 'Unknown';
+        // Copy tin nhắn
+        const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
         
-        const forwardPrefix = isForward2 ? '🌐 Forward2' : '🤖 Forward';
-        Utils.log(`${forwardPrefix}: ${messageType} từ ${originalSender} (${chatId} -> ${activeRule.destGroupId}, trigger: ${trigger})`);
-        
-        // Thông báo thành công với thông tin album nếu có
-        let successMessage = isForward2 ? `` : ``;
-        
-        if (result.albumSize) {
-          successMessage += ``;
-          if (result.method === 'forward') {
-            successMessage += ` (forwarded album)`;
-          } else if (result.method === 'sendFile') {
-            successMessage += ` (sendFile method)`;
-          } else if (result.fallback) {
-            successMessage += ` (individual files)`;
-          } else {
-            successMessage += ` (true album)`;
+        if (result.success) {
+          if (!isForward2 && result.photoMessageIds?.length) {
+            this.registerForwardMirror({
+              sourceGroupId:
+                Utils.getMessageChatId(originalMessage) ||
+                activeRule.sourceGroupId ||
+                chatId,
+              sourceMsgId: originalMessage.id || replyToMsgId,
+              destGroupId: activeRule.destGroupId,
+              destMsgIds: result.photoMessageIds,
+            });
           }
+
+          await this.triggerPic2ForForwardedPhotos(activeRule.destGroupId, result.photoMessageIds);
+
+          Utils.log(`${forwardPrefix}: ${messageType} từ ${originalSender} (${chatId} -> ${activeRule.destGroupId}, trigger: ${trigger})`);
+          
+          // Thông báo thành công với thông tin album nếu có
+          let successMessage = isForward2 ? `` : ``;
+          
+          if (result.albumSize) {
+            successMessage += ``;
+            if (result.method === 'forward') {
+              successMessage += ` (forwarded album)`;
+            } else if (result.method === 'sendFile') {
+              successMessage += ` (sendFile method)`;
+            } else if (result.fallback) {
+              successMessage += ` (individual files)`;
+            } else {
+              successMessage += ` (true album)`;
+            }
+          }
+          
+          await this.sendReply(message.chatId, message.id, successMessage);
+        } else {
+          Utils.log(`❌ ${forwardPrefix} thất bại (${chatId} -> ${activeRule.destGroupId}): ${result.error}`);
+          await this.sendReply(message.chatId, message.id, 
+            `❌ Không thể tự động chuyển tiếp đến \`${activeRule.destGroupId}\`: ${result.error}`);
         }
-        
-        await this.sendReply(message.chatId, message.id, successMessage);
-      } else {
-        await this.sendReply(message.chatId, message.id, 
-          `❌ Không thể tự động chuyển tiếp: ${result.error}`);
       }
 
     } catch (error) {
@@ -2606,32 +2609,26 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
       Utils.log(`🎯 Admin ${reactorUserId} reaction emoji: ${reactionEmoji} in chat ${chatId}`);
 
-      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B)
-      const rule = Utils.findForwardRule(this.settings, chatId, reactionEmoji);
+      // 1. Kiểm tra Forward rule thường trước (nhóm A → nhóm B, có thể nhiều nhóm B)
+      const rules = Utils.findForwardRules(this.settings, chatId, reactionEmoji);
       
       // 2. Kiểm tra Forward2 rule (bất kỳ nhóm → nhóm đích, chỉ admin)
       const forward2Rule = Utils.findForward2Rule(this.settings, reactionEmoji);
       
       // Nếu không có rule nào thì return
-      if (!rule && !forward2Rule) {
+      if (!rules.length && !forward2Rule) {
         Utils.log(`❌ Không tìm thấy forward/forward2 rule cho emoji: ${reactionEmoji} trong chat ${chatId}`);
         return;
       }
       
       // Ưu tiên forward2 rule nếu admin, nếu không thì dùng forward thường
-      let activeRule = rule;
+      let activeRules = rules;
       let isForward2 = false;
       
       if (forward2Rule) {
-        activeRule = forward2Rule;
+        activeRules = [forward2Rule];
         isForward2 = true;
-      } else if (!rule) {
-        return;
       }
-
-      const ruleType = isForward2 ? 'forward2' : 'forward';
-      const sourceInfo = isForward2 ? 'ANY_GROUP' : activeRule.sourceGroupId;
-      Utils.log(`✅ Tìm thấy ${ruleType} rule: ${sourceInfo} -> ${activeRule.destGroupId} với trigger: ${reactionEmoji} (triggered by admin ${reactorUserId})`);
 
       // Kiểm tra xem tin nhắn có thể copy không
       if (!Utils.canCopyMessage(originalMessage)) {
@@ -2639,46 +2636,53 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         return;
       }
 
-      // Thực hiện copy message
+      const ruleType = isForward2 ? 'forward2' : 'forward';
       const forwardPrefix = isForward2 ? '🌐 Admin Forward2' : '🚀 Admin Forward';
-      Utils.log(`${forwardPrefix}: ${reactionEmoji} từ ${chatId} đến ${activeRule.destGroupId} by ${reactorUserId}`);
-      
-      const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
-      if (result.success) {
-        if (!isForward2 && result.photoMessageIds?.length) {
-          this.registerForwardMirror({
-            sourceGroupId:
-              Utils.getMessageChatId(originalMessage) ||
-              activeRule.sourceGroupId ||
-              chatId,
-            sourceMsgId: originalMessage.id,
-            destGroupId: activeRule.destGroupId,
-            destMsgIds: result.photoMessageIds,
-          });
-        }
 
-        await this.triggerPic2ForForwardedPhotos(activeRule.destGroupId, result.photoMessageIds);
+      for (const activeRule of activeRules) {
+        const sourceInfo = isForward2 ? 'ANY_GROUP' : activeRule.sourceGroupId;
+        Utils.log(`✅ Tìm thấy ${ruleType} rule: ${sourceInfo} -> ${activeRule.destGroupId} với trigger: ${reactionEmoji} (triggered by admin ${reactorUserId})`);
 
-        const reactionType = isForward2 ? 'global reaction' : 'reaction';
-        let successMessage = `${isForward2 ? '🌐' : '🤖'} Admin ${reactorUserId} đã chuyển tiếp qua ${reactionType} ${reactionEmoji} đến nhóm \`${activeRule.destGroupId}\``;
+        // Thực hiện copy message
+        Utils.log(`${forwardPrefix}: ${reactionEmoji} từ ${chatId} đến ${activeRule.destGroupId} by ${reactorUserId}`);
         
-        if (result.albumSize) {
-          successMessage += `\n📸 Album: ${result.albumSize} items`;
-          if (result.method === 'forward') {
-            successMessage += ` (forwarded album)`;
-          } else if (result.method === 'sendFile') {
-            successMessage += ` (sendFile method)`;
-          } else if (result.fallback) {
-            successMessage += ` (individual files)`;
-          } else {
-            successMessage += ` (true album)`;
+        const result = await this.copyMessage(originalMessage, activeRule.destGroupId);
+        if (result.success) {
+          if (!isForward2 && result.photoMessageIds?.length) {
+            this.registerForwardMirror({
+              sourceGroupId:
+                Utils.getMessageChatId(originalMessage) ||
+                activeRule.sourceGroupId ||
+                chatId,
+              sourceMsgId: originalMessage.id,
+              destGroupId: activeRule.destGroupId,
+              destMsgIds: result.photoMessageIds,
+            });
           }
-        }
 
-        Utils.log(`✅ ${successMessage}`);
-        // Note: Không reply lại trong reaction để tránh spam
-      } else {
-        Utils.log(`❌ Admin ${reactorUserId} auto-forward reaction thất bại: ${result.error}`);
+          await this.triggerPic2ForForwardedPhotos(activeRule.destGroupId, result.photoMessageIds);
+
+          const reactionType = isForward2 ? 'global reaction' : 'reaction';
+          let successMessage = `${isForward2 ? '🌐' : '🤖'} Admin ${reactorUserId} đã chuyển tiếp qua ${reactionType} ${reactionEmoji} đến nhóm \`${activeRule.destGroupId}\``;
+          
+          if (result.albumSize) {
+            successMessage += `\n📸 Album: ${result.albumSize} items`;
+            if (result.method === 'forward') {
+              successMessage += ` (forwarded album)`;
+            } else if (result.method === 'sendFile') {
+              successMessage += ` (sendFile method)`;
+            } else if (result.fallback) {
+              successMessage += ` (individual files)`;
+            } else {
+              successMessage += ` (true album)`;
+            }
+          }
+
+          Utils.log(`✅ ${successMessage}`);
+          // Note: Không reply lại trong reaction để tránh spam
+        } else {
+          Utils.log(`❌ Admin ${reactorUserId} auto-forward reaction thất bại (${activeRule.destGroupId}): ${result.error}`);
+        }
       }
 
     } catch (error) {
