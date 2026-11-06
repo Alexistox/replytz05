@@ -1314,6 +1314,548 @@ class Utils {
     }
     return chunks;
   }
+
+  static RATE_UNAVAILABLE = '汇率暂时无法获取';
+
+  static ensureRateDesk(settings) {
+    let changed = false;
+    if (!settings.rateDesk || typeof settings.rateDesk !== 'object' || Array.isArray(settings.rateDesk)) {
+      settings.rateDesk = {};
+      changed = true;
+    }
+    const desk = settings.rateDesk;
+    if (desk.markup == null) {
+      desk.markup = 230;
+      changed = true;
+    }
+    if (desk.amount == null) {
+      desk.amount = 100000000;
+      changed = true;
+    }
+    if (desk.row == null) {
+      desk.row = 5;
+      changed = true;
+    }
+    if (desk.priceEnabled == null) {
+      desk.priceEnabled = true;
+      changed = true;
+    }
+    if (!desk.desks || typeof desk.desks !== 'object' || Array.isArray(desk.desks)) {
+      desk.desks = {};
+      changed = true;
+    }
+    if (!desk.customers || typeof desk.customers !== 'object' || Array.isArray(desk.customers)) {
+      desk.customers = {};
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** null | 'price' | 'card'. Tin giao dịch ngân hàng không tính. */
+  static detectRateAsk(text) {
+    const raw = text == null ? '' : String(text);
+    if (!raw.trim() || Utils.isTransactionMessage(raw)) return null;
+    const card = /银行卡|要卡|换卡|卡号|卡/u.test(raw) || /\bka\b/i.test(raw);
+    const price =
+      raw.includes('汇率') ||
+      raw.includes('价格') ||
+      raw.includes('牌价') ||
+      raw.includes('多少') ||
+      raw.toLowerCase().includes('huilv');
+    if (card && price) return 'both';
+    if (card) return 'card';
+    if (price) return 'price';
+    return null;
+  }
+
+  static parseAskNumber(token) {
+    if (/^\d{1,3}(\.\d{3})+$/.test(token) || /^\d{1,3}(,\d{3})+$/.test(token)) {
+      if (token.startsWith('0')) return null;
+      return Number(token.replace(/[.,]/g, ''));
+    }
+    if (/^\d+$/.test(token)) {
+      if (token.startsWith('0')) return null;
+      return Number(token);
+    }
+    if (/^\d+[.,]\d{1,2}$/.test(token)) return Number(token.replace(',', '.'));
+    return null;
+  }
+
+  static formatVndAmount(amount) {
+    const n = Math.round(Number(amount));
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const grouped = String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return `${grouped} vnd`;
+  }
+
+  /** Số tiền đầu tiên trong câu hỏi. Bỏ dãy số trơn như số tài khoản. */
+  static extractAskAmount(text) {
+    const raw = String(text || '');
+    if (!raw.trim()) return null;
+    const number = '(\\d{1,3}(?:\\.\\d{3})+|\\d{1,3}(?:,\\d{3})+|\\d+(?:[.,]\\d{1,2})?)';
+    const specs = [
+      { re: new RegExp(`${number}\\s*(?:triệu|trieu|tr)(?![\\p{L}\\p{N}])`, 'giu'), mult: 1000000 },
+      { re: new RegExp(`${number}\\s*万`, 'gu'), mult: 10000 },
+      { re: new RegExp(`${number}\\s*亿`, 'gu'), mult: 100000000 },
+      { re: new RegExp(`${number}\\s*(?:vnd|vnđ|vnĐ|đồng|Đồng|dong|đ|Đ)(?![\\p{L}\\p{N}])`, 'giu'), mult: 1 },
+      { re: /(\d{1,3}(?:\.\d{3})+|\d{1,3}(?:,\d{3})+)/g, mult: 1 },
+    ];
+    let best = null;
+    for (const spec of specs) {
+      spec.re.lastIndex = 0;
+      let match = spec.re.exec(raw);
+      while (match) {
+        const value = Utils.parseAskNumber(match[1]);
+        const amount = value == null ? null : value * spec.mult;
+        if (amount > 0 && (!best || match.index < best.index || (match.index === best.index && match[0].length > best.length))) {
+          best = { index: match.index, length: match[0].length, amount };
+        }
+        match = spec.re.exec(raw);
+      }
+    }
+    return best ? Utils.formatVndAmount(best.amount) : null;
+  }
+
+  static stripVi(text) {
+    return String(text || '')
+      .replace(/[đĐ]/g, 'd')
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase();
+  }
+
+  /** 'ok' | 'change' | 'locked' | null. Từ tín hiệu chỉ cần nằm trong câu. Phủ định thì xin thẻ mới. */
+  static classifyCardReply(text) {
+    const folded = Utils.stripVi(text).replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!folded) return null;
+    if (/\bkhoa\b/.test(folded)) return 'locked';
+    if (/\bdoi\b/.test(folded)) return 'change';
+    const raw = String(text || '').toLowerCase();
+    const negated = /\bkhong\b|\bko\b/.test(folded)
+      || /đừng/.test(raw)
+      || (/\bdung\b/.test(folded) && !/dùng/.test(raw));
+    if (negated) return 'change';
+    return Utils.cardOkSignals().some((pattern) => pattern.test(folded)) ? 'ok' : null;
+  }
+
+  static cardOkSignals() {
+    return [
+      /binh thuong/,
+      /\bbthg\b/,
+      /\bbth\b/,
+      /\bbt\b/,
+      /danh vao/,
+      /\bdv\b/,
+      /\bcon\b/,
+      /\bvao\b/,
+    ];
+  }
+
+  /** 'yes' | 'no' | null. Trả lời câu "thẻ đã test chưa". Phủ định được xét trước. */
+  static classifyTestReply(text) {
+    const folded = Utils.stripVi(text).replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!folded) return null;
+    const raw = String(text || '').toLowerCase();
+    const no = /đừng/.test(raw)
+      || /\bkhong\b|\bko\b|\bchua\b|\bnham\b|\bsai\b|\bdoi\b|\bkhoa\b/.test(folded)
+      || (/\bdung\b/.test(folded) && !/dùng/.test(raw) && !/đúng/.test(raw));
+    if (no) return 'no';
+    const yes = [
+      /\broi\b/,
+      /\bda test\b/,
+      /\btest\b/,
+      /\bok\b/,
+      /\boke\b/,
+      /\bduoc\b/,
+      /\bxong\b/,
+      ...Utils.cardOkSignals(),
+    ];
+    if (/đúng/.test(raw) || yes.some((pattern) => pattern.test(folded))) return 'yes';
+    return null;
+  }
+
+  static matchBankName(foldedText) {
+    const rules = [
+      [/vietcombank|\bvcb\b/, 'Vietcombank'],
+      [/vietinbank|\bvietin\b|\bctg\b/, 'VietinBank'],
+      [/\bbidv\b/, 'BIDV'],
+      [/agribank/, 'Agribank'],
+      [/techcombank|\btcb\b/, 'Techcombank'],
+      [/mbbank|mb\s*bank|\bmb\b/, 'MB'],
+      [/\bacb\b/, 'ACB'],
+      [/vpbank|\bvpb\b/, 'VPBank'],
+      [/tpbank|\btpb\b/, 'TPBank'],
+      [/sacombank|\bstb\b/, 'Sacombank'],
+      [/hdbank|\bhdb\b/, 'HDBank'],
+      [/\bmsb\b|maritime/, 'MSB'],
+      [/\bshb\b/, 'SHB'],
+      [/\bvib\b/, 'VIB'],
+      [/\bocb\b/, 'OCB'],
+      [/seabank/, 'SeABank'],
+      [/eximbank|\beib\b/, 'Eximbank'],
+      [/nam\s*a\s*bank|namabank/, 'Nam A Bank'],
+      [/lpbank|lien\s*viet/, 'LPBank'],
+      [/abbank/, 'ABBank'],
+      [/bac\s*a\s*bank|bacabank/, 'Bac A Bank'],
+      [/vietabank|\bvab\b/, 'VietABank'],
+      [/kienlong|kien\s*long/, 'KienlongBank'],
+      [/\bncb\b/, 'NCB'],
+      [/pvcombank|pvcom/, 'PVcomBank'],
+      [/dong\s*a\s*bank|donga/, 'DongA Bank'],
+      [/shinhan/, 'Shinhan'],
+      [/hsbc/, 'HSBC'],
+    ];
+    for (const [pattern, name] of rules) {
+      if (pattern.test(foldedText)) return name;
+    }
+    return '';
+  }
+
+  static matchAccountNumber(lines, folded) {
+    const label = /(stk|so tk|so tai khoan|tai khoan|账号|帐号)/;
+    const pick = (line) => {
+      const compact = String(line).replace(/(?<=\d)\s+(?=\d)/g, '');
+      const found = compact.match(/\d{6,19}/g);
+      if (!found || !found.length) return '';
+      return found.sort((a, b) => b.length - a.length)[0];
+    };
+    for (let i = 0; i < lines.length; i++) {
+      if (label.test(folded[i]) || /账号|帐号/.test(lines[i])) {
+        const account = pick(lines[i]);
+        if (account) return account;
+      }
+    }
+    const loose = [];
+    for (const line of lines) {
+      const account = pick(line);
+      if (account && !/^20\d{6,}$/.test(account)) loose.push(account);
+    }
+    if (!loose.length) return '';
+    const notPhone = loose.find((n) => !(n.length === 10 && n.startsWith('0')));
+    return notPhone || loose[0];
+  }
+
+  static looksLikeHolderName(value) {
+    const name = String(value || '').trim();
+    if (name.length < 4 || name.length > 60) return false;
+    if (/\d{4,}/.test(name)) return false;
+    return /\p{L}/u.test(name);
+  }
+
+  static matchAccountHolder(lines, folded) {
+    const label = /(chu\s*tk|chu\s*tai\s*khoan|ten\s*chu|ho\s*ten|ho\s*va\s*ten|^ten\b|户名|姓名)/;
+    for (let i = 0; i < lines.length; i++) {
+      if (!label.test(folded[i]) && !/户名|姓名/.test(lines[i])) continue;
+      const after = lines[i].split(/[:：]/).slice(1).join(':').trim();
+      if (Utils.looksLikeHolderName(after)) return after;
+      if (lines[i + 1] && Utils.looksLikeHolderName(lines[i + 1])) return lines[i + 1].trim();
+    }
+    for (const line of lines) {
+      if (/^[\p{Lu}][\p{Lu}\s'.]{4,}$/u.test(line) && line.includes(' ')) return line.trim();
+    }
+    return '';
+  }
+
+  /** @returns {{ bank: string, account: string, name: string } | null} */
+  static parseBankCard(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return null;
+    const lines = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (!lines.length) return null;
+    const folded = lines.map((line) => Utils.stripVi(line));
+    const bank = Utils.matchBankName(folded.join('\n'));
+    const account = Utils.matchAccountNumber(lines, folded);
+    const name = Utils.matchAccountHolder(lines, folded);
+    if (!bank || !account || !name) return null;
+    return { bank, account, name };
+  }
+
+  static formatCardCaption(info) {
+    return `可以进\n银行：${info.bank}\n账号：${info.account}\n户名：${info.name}`;
+  }
+
+  static looksLikeCardText(text) {
+    return /\d{6,}/.test(String(text || ''));
+  }
+
+  static normalizeExtractedCard(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const bank = String(raw.bank || '').trim();
+    const account = String(raw.account || '').replace(/\D/g, '');
+    const name = String(raw.name || '').trim();
+    if (!bank || !name || !/^\d{6,19}$/.test(account)) return null;
+    return { bank, account, name };
+  }
+
+  /**
+   * Tách thẻ bằng OpenAI. Ảnh gửi kèm dạng data URL.
+   * @returns {Promise<{ bank: string, account: string, name: string } | null>}
+   */
+  static async extractBankCardOpenAI({ apiKey, model, text, imageBuffer, mime }) {
+    if (!apiKey) {
+      Utils.log('❌ Thiếu OPENAI_API_KEY trong .env');
+      return null;
+    }
+    const instruction = [
+      'Trích xuất thông tin tài khoản ngân hàng Việt Nam từ chữ hoặc ảnh.',
+      'Chỉ trả JSON với đúng các khóa bank, account, name.',
+      'bank là tên ngân hàng. account chỉ gồm chữ số. name là tên chủ tài khoản.',
+      'Thiếu mục nào thì để chuỗi rỗng. Không bịa số tài khoản hoặc tên.',
+    ].join(' ');
+    const parts = [{ type: 'text', text: instruction }];
+    const bodyText = String(text || '').trim();
+    if (bodyText) parts.push({ type: 'text', text: bodyText });
+    if (imageBuffer && imageBuffer.length) {
+      const type = mime || 'image/jpeg';
+      parts.push({
+        type: 'image_url',
+        image_url: { url: `data:${type};base64,${imageBuffer.toString('base64')}` },
+      });
+    }
+    if (parts.length === 1) return null;
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        signal: AbortSignal.timeout(25000),
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model || 'gpt-4o-mini',
+          temperature: 0,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: 'Bạn chỉ trả JSON hợp lệ, không giải thích.' },
+            { role: 'user', content: parts },
+          ],
+        }),
+      });
+      if (!res.ok) {
+        Utils.log(`❌ OpenAI HTTP ${res.status}`);
+        return null;
+      }
+      const data = await res.json();
+      let content = data?.choices?.[0]?.message?.content || '';
+      content = String(content).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      return Utils.normalizeExtractedCard(JSON.parse(content));
+    } catch (error) {
+      Utils.log(`❌ OpenAI lỗi: ${error.message}`);
+      return null;
+    }
+  }
+
+  static rateCardSignature(message) {
+    const text = message?.message || message?.text || '';
+    const digits = String(text).match(/\d{6,}/g);
+    if (digits && digits.length) return `stk:${digits.join(',')}`;
+    const photoId = message?.photo?.id || message?.media?.photo?.id;
+    if (photoId != null) return `photo:${photoId}`;
+    const docId = message?.document?.id || message?.media?.document?.id;
+    if (docId != null) return `doc:${docId}`;
+    return `msg:${message?.id ?? ''}`;
+  }
+
+  static rateReplyHasContent(message, text) {
+    if (text && String(text).trim()) return true;
+    if (!message) return false;
+    if (Utils.hasPhoto(message)) return true;
+    const media = message.media;
+    if (!media) return false;
+    const name = media.className || '';
+    return name === 'MessageMediaDocument' || name === 'MessageMediaPhoto';
+  }
+
+  /** Quảng cáo cột Mua USDT/VND có hạn mức chứa `amount`. null khi không lấy được sổ. */
+  static async fetchOkxSellAds(amount = 100000000) {
+    const target = Number(amount);
+    const url =
+      'https://www.okx.com/v3/c2c/tradingOrders/books?quoteCurrency=vnd&baseCurrency=usdt&side=sell&paymentMethod=all&userType=all&showTrade=false&receivingAds=false&showFollow=false&showAlreadyTraded=false&isAbleFilter=false';
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(12000),
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0',
+      },
+    });
+    if (!res.ok) {
+      Utils.log(`❌ OKX HTTP ${res.status}`);
+      return null;
+    }
+    const body = await res.json();
+    const sell = body?.data?.sell;
+    if (!Array.isArray(sell)) {
+      Utils.log('❌ OKX không có sổ cột Mua');
+      return null;
+    }
+    return sell.filter((ad) => {
+      const min = Number(ad?.quoteMinAmountPerOrder);
+      const max = Number(ad?.quoteMaxAmountPerOrder);
+      return Number.isFinite(min) && Number.isFinite(max) && min <= target && max >= target;
+    });
+  }
+
+  /**
+   * Hàng `row` (mặc định 5) trên cột Mua USDT/VND, hạn mức chứa `amount`, cộng `markup`.
+   * @returns {Promise<string>} `汇率：…` hoặc RATE_UNAVAILABLE
+   */
+  static async fetchOkxHuilv({ amount = 100000000, row = 5, markup = 230 } = {}) {
+    const target = Number(amount);
+    const want = Number(row);
+    const extra = Number(markup);
+    try {
+      const fit = await Utils.fetchOkxSellAds(target);
+      if (!Array.isArray(fit)) return Utils.RATE_UNAVAILABLE;
+      if (!Number.isInteger(want) || want < 1 || fit.length < want) {
+        Utils.log(`❌ OKX cột Mua mốc ${target} chỉ có ${fit.length} hàng, cần hàng ${want}`);
+        return Utils.RATE_UNAVAILABLE;
+      }
+      const price = Number(fit[want - 1].price);
+      if (!Number.isFinite(price)) return Utils.RATE_UNAVAILABLE;
+      const quoted = Math.round(price) + (Number.isFinite(extra) ? extra : 0);
+      return `汇率：${quoted}`;
+    } catch (error) {
+      Utils.log(`❌ OKX lỗi: ${error.message}`);
+      return Utils.RATE_UNAVAILABLE;
+    }
+  }
+
+  /** Bỏ `skip` thương nhân đầu, liệt kê `count` giá tiếp theo. null khi lỗi mạng. */
+  static async listOkxMerchants({ amount = 100000000, skip = 1, count = 10 } = {}) {
+    const fit = await Utils.fetchOkxSellAds(amount);
+    if (!Array.isArray(fit)) return null;
+    return Utils.formatP2pMerchantList('OKX', fit.map((ad) => ({
+      price: ad?.price,
+      nick: ad?.nickName,
+    })), { skip, count });
+  }
+
+  static coversFiatAmount(min, max, amount) {
+    return Number.isFinite(min) && Number.isFinite(max) && min <= amount && max >= amount;
+  }
+
+  static async fetchBinanceBuyAds(amount = 100000000) {
+    const target = Number(amount);
+    const url = 'https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search';
+    const collected = [];
+    for (let page = 1; page <= 3 && collected.length < 11; page += 1) {
+      const res = await fetch(url, {
+        method: 'POST',
+        signal: AbortSignal.timeout(12000),
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0',
+        },
+        body: JSON.stringify({
+          asset: 'USDT',
+          fiat: 'VND',
+          merchantCheck: false,
+          page,
+          payTypes: [],
+          publisherType: null,
+          rows: 20,
+          tradeType: 'BUY',
+          transAmount: String(target),
+        }),
+      });
+      if (!res.ok) {
+        Utils.log(`❌ Binance HTTP ${res.status}`);
+        return null;
+      }
+      const body = await res.json();
+      if (body?.code !== '000000' || !Array.isArray(body.data)) {
+        Utils.log('❌ Binance không có sổ cột Mua');
+        return null;
+      }
+      for (const row of body.data) {
+        const adv = row?.adv || {};
+        const min = Number(adv.minSingleTransAmount);
+        const hardMax = Number(adv.maxSingleTransAmount);
+        const dynamic = Number(adv.dynamicMaxSingleTransAmount);
+        const max = Number.isFinite(dynamic) && dynamic > 0 ? Math.min(hardMax, dynamic) : hardMax;
+        if (!Utils.coversFiatAmount(min, max, target)) continue;
+        collected.push({ price: adv.price, nick: row?.advertiser?.nickName });
+      }
+      if (body.data.length < 20) break;
+    }
+    return collected;
+  }
+
+  static async fetchBybitBuyAds(amount = 100000000) {
+    const target = Number(amount);
+    const url = 'https://api2.bybit.com/fiat/otc/item/online';
+    const collected = [];
+    for (let page = 1; page <= 3 && collected.length < 11; page += 1) {
+      const res = await fetch(url, {
+        method: 'POST',
+        signal: AbortSignal.timeout(12000),
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0',
+        },
+        body: JSON.stringify({
+          userId: '',
+          tokenId: 'USDT',
+          currencyId: 'VND',
+          payment: [],
+          side: '1',
+          size: '20',
+          page: String(page),
+          amount: String(target),
+          authMaker: false,
+          canTrade: false,
+        }),
+      });
+      if (!res.ok) {
+        Utils.log(`❌ Bybit HTTP ${res.status}`);
+        return null;
+      }
+      const body = await res.json();
+      const items = body?.result?.items;
+      if (body?.ret_code !== 0 || !Array.isArray(items)) {
+        Utils.log('❌ Bybit không có sổ cột Mua');
+        return null;
+      }
+      for (const ad of items) {
+        const min = Number(ad?.minAmount);
+        const max = Number(ad?.maxAmount);
+        if (!Utils.coversFiatAmount(min, max, target)) continue;
+        collected.push({ price: ad?.price, nick: ad?.nickName });
+      }
+      if (items.length < 20) break;
+    }
+    return collected;
+  }
+
+  static async listBinanceMerchants({ amount = 100000000, skip = 1, count = 10 } = {}) {
+    const fit = await Utils.fetchBinanceBuyAds(amount);
+    if (!Array.isArray(fit)) return null;
+    return Utils.formatP2pMerchantList('Binance', fit, { skip, count });
+  }
+
+  static async listBybitMerchants({ amount = 100000000, skip = 1, count = 10 } = {}) {
+    const fit = await Utils.fetchBybitBuyAds(amount);
+    if (!Array.isArray(fit)) return null;
+    return Utils.formatP2pMerchantList('Bybit', fit, { skip, count });
+  }
+
+  static formatP2pMerchantList(exchange, ads, { skip = 1, count = 10 } = {}) {
+    const start = Math.max(0, Number(skip) || 0);
+    const take = Math.max(0, Number(count) || 0);
+    const rows = ads.slice(start, start + take);
+    const lines = rows.map((ad, index) => {
+      const price = Number(ad?.price);
+      const shown = Number.isFinite(price) ? String(Math.round(price)) : '?';
+      const nick = String(ad?.nick || 'không tên').replace(/\s+/g, ' ').trim().slice(0, 40);
+      return `${start + index + 1}. ${shown} — ${nick}`;
+    });
+    const header = `${exchange} cột Mua USDT/VND, mốc 100 triệu. Bỏ thương nhân đầu, ${take} người tiếp theo:`;
+    if (!lines.length) return `${header}\nKhông còn thương nhân sau người đầu.`;
+    const short = lines.length < take ? `\nChỉ còn ${lines.length} thương nhân sau người đầu.` : '';
+    return `${header}\n${lines.join('\n')}${short}`;
+  }
 }
 
 module.exports = Utils; 

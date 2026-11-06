@@ -18,6 +18,9 @@ class BankTransactionUserbot {
     // setforward A→B: destMsgId (B) → sourceMsgId (A) để mirror reply 1/2/3
     this.forwardMirrorMap = new Map();
     this.forwardMirrorTtlMs = 2 * 60 * 60 * 1000; // TTL ~2h
+    this.ratePending = new Map();
+    this.okxRateCache = null;
+    this.rateWaitMs = 20 * 60 * 1000;
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -25,6 +28,7 @@ class BankTransactionUserbot {
     this.migratePic2Settings();
     this.migrateCopyAllWatermark();
     this.migrateMirrorTriggers();
+    this.migrateRateDesk();
     
     Utils.log('🤖 Bank Transaction Userbot khởi tạo');
     Utils.log(`📊 Chế độ: Reply theo từng nhóm`);
@@ -95,6 +99,13 @@ class BankTransactionUserbot {
       this.settings.mirrorTriggers = {};
       Utils.saveSettings(this.settings);
       Utils.log('✅ Đã khởi tạo mirrorTriggers');
+    }
+  }
+
+  migrateRateDesk() {
+    if (Utils.ensureRateDesk(this.settings)) {
+      Utils.saveSettings(this.settings);
+      Utils.log('✅ Đã khởi tạo rateDesk');
     }
   }
 
@@ -488,6 +499,12 @@ class BankTransactionUserbot {
         // Mark as processed cho commands
         this.processedMessages.set(messageKey, currentTime);
         await this.handleCommand(messageText, chatId, messageId, message);
+        return;
+      }
+
+      const rateHandled = await this.handleRateDeskMessage(message, messageText);
+      if (rateHandled) {
+        this.processedMessages.set(messageKey, currentTime);
         return;
       }
 
@@ -960,6 +977,54 @@ class BankTransactionUserbot {
         );
         break;
 
+      case '/huilv':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleHuilvCommand(args, chatId, messageId);
+        break;
+
+      case '/okx':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleOkxCommand(chatId, messageId);
+        break;
+
+      case '/binan':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleBinanCommand(chatId, messageId);
+        break;
+
+      case '/bybit':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleBybitCommand(chatId, messageId);
+        break;
+
       case '/cal':
         if (!this.isOwnerOrAdmin(originalMessage)) {
           await this.sendReply(
@@ -1273,6 +1338,18 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 /setforward2 -1001234567890 🌐
 /setforward2 -987654321 global
 /setforward2 -555666777 📡
+
+**Commands - Tỷ giá và thẻ (👑 admin):**
+/huilv set [nhóm khách] [nhóm báo giá] [@người hoặc id] ... — Chỉ gắn hỏi thẻ. Lưu user id, lúc tag lấy username hiện tại
+/huilv on [nhóm khách] — Bật giá OKX cho riêng nhóm đó
+/huilv pause [nhóm khách] — Tắt giá OKX của riêng nhóm đó. Hỏi thẻ vẫn chạy
+/huilv off [nhóm khách] — Gỡ nhóm khách
+/huilv list — Xem cấu hình
+/okx — Liệt kê giá 10 thương nhân cột Mua OKX mốc 100 triệu, bỏ người đầu
+/binan — Liệt kê giá 10 thương nhân cột Mua Binance mốc 100 triệu, bỏ người đầu
+/bybit — Liệt kê giá 10 thương nhân cột Mua Bybit mốc 100 triệu, bỏ người đầu
+Hỏi giá (汇率, 价格, 牌价, 多少, huilv): chỉ nhóm đã /huilv on mới gửi "1" rồi reply 汇率 = hàng 5 cột Mua OKX mốc 100 triệu + 230. Nhóm chưa bật thì bot im.
+Hỏi thẻ (卡, 银行卡, 要卡, 换卡, 卡号, ka): gửi "1", nhắn nhóm báo giá và tag. Câu có số tiền thì dòng dưới tin nhóm báo giá là số đó, ví dụ 31.000.000 vnd. Câu chứa từ tín hiệu (bình thường, bt, bth, bank bth, còn, vào, đánh vào, kể cả không dấu) thì reply 可以进. Câu có không, ko, đừng, khóa hoặc đổi thì hỏi thẻ mới. Thẻ mới được tách ngân hàng, số tài khoản, tên, rồi hỏi "thẻ đã test chưa a". Có rồi, test rồi, ok, được, hoặc từ tín hiệu 可以进 (bình thường, bt, bth, bank bth, còn, vào, đánh vào) thì mới gửi caption sang nhóm khách. Chưa, không, nhầm, sai thì xin thẻ khác. Tin thẻ không kèm tỷ giá. Hết 20 phút thì hủy.
 
 **Commands - Admin:**
 /admin @username - Thêm admin
@@ -4349,6 +4426,666 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     } catch (error) {
       Utils.log(`❌ Lỗi khi xử lý pic2: ${error.message}`);
     }
+  }
+
+  rateChatId(message) {
+    if (!message || message.chatId == null) return Utils.getMessageChatId(message);
+    return String(message.chatId);
+  }
+
+  customerRecord(chatId) {
+    const customers = this.settings.rateDesk?.customers;
+    if (!customers) return null;
+    const key = String(chatId);
+    if (customers[key]) return { key, record: customers[key] };
+    return null;
+  }
+
+  clearRatePending(customerKey) {
+    const pending = this.ratePending.get(customerKey);
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    this.ratePending.delete(customerKey);
+  }
+
+  armRatePending(customerKey) {
+    const pending = this.ratePending.get(customerKey);
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.expiresAt = Date.now() + this.rateWaitMs;
+    pending.timer = setTimeout(() => {
+      if (this.ratePending.get(customerKey) !== pending) return;
+      this.ratePending.delete(customerKey);
+      Utils.log(`⏱️ Hủy hỏi thẻ nhóm ${customerKey} sau 20 phút`);
+    }, this.rateWaitMs);
+  }
+
+  findOpenRatePending(deskChatId, replyToId, message, messageText) {
+    const deskKey = String(deskChatId);
+    const now = Date.now();
+    const active = [];
+    for (const [customerKey, pending] of this.ratePending.entries()) {
+      if (!pending || String(pending.deskGroupId) !== deskKey) continue;
+      if (now > pending.expiresAt) {
+        this.clearRatePending(customerKey);
+        Utils.log(`⏱️ Bỏ trả lời muộn cho nhóm ${customerKey}`);
+        continue;
+      }
+      active.push({ customerKey, pending });
+    }
+    if (!active.length) return null;
+
+    const newest = (list) => list.reduce((best, hit) => {
+      if (!best || (hit.pending.updatedAt || 0) >= (best.pending.updatedAt || 0)) return hit;
+      return best;
+    }, null);
+
+    if (replyToId != null) {
+      const replyKey = String(replyToId);
+      const byReply = active.find((hit) => String(hit.pending.promptMessageId) === replyKey);
+      const statusPhrase = Utils.classifyCardReply(messageText);
+      const phraseWhileWaitingCard = byReply
+        && byReply.pending.stage === 'card'
+        && statusPhrase
+        && !Utils.hasPhoto(message);
+      if (byReply && !phraseWhileWaitingCard) return byReply;
+    }
+
+    const verdict = Utils.classifyCardReply(messageText);
+    if (verdict) {
+      const statusHit = newest(active.filter((hit) => hit.pending.stage === 'status'));
+      if (statusHit) return statusHit;
+    }
+
+    const testHit = newest(active.filter((hit) => hit.pending.stage === 'tested'));
+    if (testHit && Utils.classifyTestReply(messageText)) return testHit;
+
+    const cardHit = newest(active.filter((hit) => hit.pending.stage === 'card'));
+    if (cardHit && Utils.rateReplyHasContent(message, messageText) && !verdict) {
+      return cardHit;
+    }
+    if (Utils.hasPhoto(message) || Utils.looksLikeCardText(messageText)) {
+      return newest(active);
+    }
+    return null;
+  }
+
+  async getHuilvText() {
+    const now = Date.now();
+    if (this.okxRateCache && now - this.okxRateCache.at < 20000 && this.okxRateCache.text) {
+      return this.okxRateCache.text;
+    }
+    const desk = this.settings.rateDesk || {};
+    const text = await Utils.fetchOkxHuilv({
+      amount: desk.amount,
+      row: desk.row,
+      markup: desk.markup,
+    });
+    if (text !== Utils.RATE_UNAVAILABLE) {
+      this.okxRateCache = { at: now, text };
+    }
+    return text;
+  }
+
+  async replyHuilv(customerGroupId, askMessageId) {
+    const text = await this.getHuilvText();
+    await this.sendReply(customerGroupId, askMessageId, text);
+    Utils.log(`💱 Đã báo ${text} cho nhóm ${customerGroupId}`);
+  }
+
+  mentionRecord(user) {
+    if (!user?.id || user.className === 'UserEmpty') return null;
+    return {
+      id: user.id.toString(),
+      accessHash: user.accessHash == null ? '' : user.accessHash.toString(),
+    };
+  }
+
+  mentionLabel(user) {
+    if (!user) return '';
+    const id = user.id != null ? user.id.toString() : '';
+    const name = user.username ? `@${user.username}` : (user.firstName || 'user');
+    return id ? `${name} (${id})` : name;
+  }
+
+  mentionsStoredSame(raw, record) {
+    return raw
+      && typeof raw === 'object'
+      && String(raw.id) === record.id
+      && String(raw.accessHash || '') === String(record.accessHash || '');
+  }
+
+  async loadMentionUser(raw) {
+    const { Api } = require('telegram');
+    if (raw && typeof raw === 'object' && raw.id && raw.accessHash) {
+      try {
+        const result = await this.client.invoke(new Api.users.GetUsers({
+          id: [new Api.InputUser({
+            userId: BigInt(raw.id),
+            accessHash: BigInt(raw.accessHash),
+          })],
+        }));
+        const user = Array.isArray(result) ? result[0] : null;
+        if (user && user.className !== 'UserEmpty' && user.id) return user;
+      } catch (error) {
+        Utils.log(`⚠️ GetUsers ${raw.id}: ${error.message}`);
+      }
+    }
+    const token = typeof raw === 'object' ? String(raw.id || '') : String(raw || '').trim();
+    if (token.startsWith('@') || /^[A-Za-z]/.test(token)) {
+      return this.client.getEntity(token.replace(/^@/, ''));
+    }
+    if (/^\d+$/.test(token)) return this.client.getEntity(parseInt(token, 10));
+    throw new Error('không nhận dạng được');
+  }
+
+  async prepareDeskMentions(deskId) {
+    const desk = this.settings.rateDesk?.desks?.[deskId];
+    const mentions = desk?.mentions || [];
+    const users = [];
+    const stored = [];
+    let changed = false;
+    for (const raw of mentions) {
+      try {
+        const user = await this.loadMentionUser(raw);
+        const record = this.mentionRecord(user);
+        if (!record?.id || !record.accessHash) throw new Error('thiếu id');
+        users.push(user);
+        stored.push(record);
+        if (!this.mentionsStoredSame(raw, record)) changed = true;
+      } catch (error) {
+        const label = raw && typeof raw === 'object' ? raw.id : raw;
+        Utils.log(`⚠️ Không lấy được user ${label}: ${error.message}`);
+        stored.push(raw);
+      }
+    }
+    if (changed && desk) {
+      desk.mentions = stored;
+      Utils.saveSettings(this.settings);
+    }
+    return users;
+  }
+
+  async buildRateDeskAsk(users, amountLine) {
+    const { Api } = require('telegram');
+    let text = 'A ơi thẻ còn bình thường không a';
+    const entities = [];
+    for (const user of users || []) {
+      try {
+        const username = user?.username ? String(user.username) : '';
+        const label = username ? `@${username}` : (user?.firstName || 'user');
+        const offset = text.length + 1;
+        text += ` ${label}`;
+        if (username) {
+          entities.push(new Api.MessageEntityMention({ offset, length: label.length }));
+        } else {
+          entities.push(new Api.InputMessageEntityMentionName({
+            offset,
+            length: label.length,
+            userId: await this.client.getInputEntity(user),
+          }));
+        }
+      } catch (error) {
+        Utils.log(`⚠️ Không tag được ${user?.id}: ${error.message}`);
+      }
+    }
+    if (amountLine) text += `\n${amountLine}`;
+    return { text, entities };
+  }
+
+  async sendRateDeskPrompt(deskGroupId, text, entities, replyTo) {
+    const payload = { message: text };
+    if (entities && entities.length) payload.formattingEntities = entities;
+    if (replyTo != null) payload.replyTo = replyTo;
+    try {
+      return await this.client.sendMessage(deskGroupId, payload);
+    } catch (error) {
+      Utils.log(`⚠️ Gửi hỏi thẻ kèm tag lỗi, gửi lại không tag: ${error.message}`);
+      const plain = { message: text };
+      if (replyTo != null) plain.replyTo = replyTo;
+      return await this.client.sendMessage(deskGroupId, plain);
+    }
+  }
+
+  async handleRateDeskMessage(message, messageText) {
+    try {
+      if (!message) return false;
+      if (message.out) {
+        const own = (messageText || '').trim();
+        const replied = message.replyTo?.replyToMsgId || message.replyToMsgId;
+        if (!replied && own === '1') return true;
+        if (own.startsWith('A ơi thẻ còn bình thường không a')) return true;
+        if (own === 'Thế a gửi thẻ mới cho e' || own === 'còn thẻ nào không a') return true;
+        if (own === 'thẻ đã test chưa a') return true;
+        if (own.startsWith('Không đọc được thẻ')) return true;
+        if (own.startsWith('可以进')) return true;
+        return false;
+      }
+      const chatId = this.rateChatId(message);
+      if (!chatId) return false;
+
+      const replyToId = message.replyTo?.replyToMsgId ?? message.replyToMsgId;
+      const pendingHit = this.findOpenRatePending(chatId, replyToId, message, messageText || '');
+      if (pendingHit) {
+        await this.consumeRatePendingReply(pendingHit, message, messageText || '');
+        return true;
+      }
+
+      const customer = this.customerRecord(chatId);
+      if (!customer) return false;
+      const kind = Utils.detectRateAsk(messageText || '');
+      if (!kind) return false;
+      await this.startRateAsk(customer, message, kind);
+      return true;
+    } catch (error) {
+      Utils.log(`❌ Luồng tỷ giá lỗi: ${error.message}`);
+      return false;
+    }
+  }
+
+  priceQuotesEnabled(customer) {
+    return customer?.record?.priceEnabled === true;
+  }
+
+  async startRateAsk(customer, message, kind) {
+    const customerGroupId = customer.key;
+    const priceOn = this.priceQuotesEnabled(customer);
+    if (kind === 'price' && !priceOn) {
+      Utils.log(`⏭️ Bỏ câu hỏi giá nhóm ${customerGroupId} vì nhóm này chưa /huilv on`);
+      return;
+    }
+
+    await this.client.sendMessage(customerGroupId, { message: '1' });
+    Utils.log(`👀 Đã gửi 1 vào nhóm khách ${customerGroupId} (${kind})`);
+
+    if (kind === 'price' || kind === 'both') {
+      if (priceOn) await this.replyHuilv(customerGroupId, message.id);
+      if (kind === 'price') return;
+    }
+
+    const deskGroupId = String(customer.record.deskGroupId || '');
+    const mentions = this.settings.rateDesk?.desks?.[deskGroupId]?.mentions || [];
+    if (!deskGroupId || !mentions.length) {
+      Utils.log(`❌ Nhóm ${customerGroupId} chưa có nhóm báo giá hoặc người tag`);
+      return;
+    }
+
+    this.clearRatePending(customerGroupId);
+    const amountLine = Utils.extractAskAmount(message.message || message.text || '');
+    const taggedUsers = await this.prepareDeskMentions(deskGroupId);
+    const ask = await this.buildRateDeskAsk(taggedUsers, amountLine);
+    const sent = await this.sendRateDeskPrompt(deskGroupId, ask.text, ask.entities);
+    const promptId = sent?.id;
+    if (promptId == null) {
+      Utils.log('❌ Không lấy được id tin hỏi thẻ');
+      return;
+    }
+    this.ratePending.set(customerGroupId, {
+      customerGroupId,
+      deskGroupId,
+      askMessageId: message.id,
+      promptMessageId: promptId,
+      stage: 'status',
+      updatedAt: Date.now(),
+      expiresAt: Date.now() + this.rateWaitMs,
+      timer: null,
+    });
+    this.armRatePending(customerGroupId);
+    Utils.log(`🃏 Đã hỏi thẻ nhóm ${deskGroupId} cho khách ${customerGroupId}, tin ${promptId}`);
+  }
+
+  async consumeRatePendingReply(hit, message, messageText) {
+    const { customerKey, pending } = hit;
+    if (pending.stage === 'status') {
+      const verdict = Utils.classifyCardReply(messageText);
+      if (!verdict && (Utils.hasPhoto(message) || Utils.looksLikeCardText(messageText))) {
+        const pasted = await this.extractCardWithOpenAI(message, messageText);
+        if (pasted) {
+          await this.holdCardForTest(hit, message, pasted);
+          return;
+        }
+      }
+      if (!verdict) return;
+      if (verdict === 'ok') {
+        this.clearRatePending(customerKey);
+        await this.sendReply(pending.customerGroupId, pending.askMessageId, '可以进');
+        Utils.log(`✅ Đã báo 可以进 cho nhóm ${pending.customerGroupId}`);
+        return;
+      }
+      const prompt = verdict === 'locked'
+        ? 'còn thẻ nào không a'
+        : 'Thế a gửi thẻ mới cho e';
+      const sent = await this.sendRateDeskPrompt(pending.deskGroupId, prompt, null);
+      if (sent?.id == null) {
+        Utils.log('❌ Không lấy được id tin xin thẻ mới');
+        return;
+      }
+      pending.stage = 'card';
+      pending.promptMessageId = sent.id;
+      pending.updatedAt = Date.now();
+      this.armRatePending(customerKey);
+      Utils.log(`🃏 Nhóm ${pending.deskGroupId} trả ${verdict}, chờ thẻ mới tin ${sent.id}`);
+      return;
+    }
+
+    if (pending.stage === 'tested') {
+      const answer = Utils.classifyTestReply(messageText);
+      if (Utils.hasPhoto(message) || Utils.looksLikeCardText(messageText)) {
+        const replacement = await this.extractCardWithOpenAI(message, messageText);
+        if (replacement) {
+          await this.holdCardForTest(hit, message, replacement);
+          return;
+        }
+      }
+      if (answer === 'yes') {
+        await this.deliverHeldCard(hit);
+        return;
+      }
+      if (answer === 'no') {
+        await this.askReplacementCard(hit);
+        return;
+      }
+      return;
+    }
+
+    if (!Utils.rateReplyHasContent(message, messageText)) return;
+    const parsed = await this.extractCardWithOpenAI(message, messageText);
+    if (!parsed) {
+      await this.client.sendMessage(pending.deskGroupId, {
+        message: 'Không đọc được thẻ, gửi lại giúp: ngân hàng, số tài khoản, tên',
+      });
+      Utils.log(`⚠️ Không tách được thẻ cho nhóm ${pending.customerGroupId}`);
+      return;
+    }
+    await this.holdCardForTest(hit, message, parsed);
+  }
+
+  async holdCardForTest(hit, message, info) {
+    const { customerKey, pending } = hit;
+    let image = null;
+    if (message?.media || Utils.hasPhoto(message)) {
+      try {
+        const buf = await this.client.downloadMedia(message, {});
+        image = Buffer.isBuffer(buf) && buf.length ? buf : null;
+      } catch (error) {
+        Utils.log(`⚠️ Không giữ được ảnh thẻ: ${error.message}`);
+      }
+      if (!image) {
+        await this.client.sendMessage(pending.deskGroupId, {
+          message: 'Không giữ được ảnh thẻ, gửi lại giúp',
+        });
+        return;
+      }
+    }
+    const sent = await this.sendRateDeskPrompt(pending.deskGroupId, 'thẻ đã test chưa a', null);
+    if (sent?.id == null) {
+      Utils.log('❌ Không lấy được id tin hỏi test thẻ');
+      return;
+    }
+    pending.heldCard = { info, image };
+    pending.stage = 'tested';
+    pending.promptMessageId = sent.id;
+    pending.updatedAt = Date.now();
+    this.armRatePending(customerKey);
+    Utils.log(`🧪 Giữ thẻ ${info.bank} ${info.account}, hỏi đã test chưa`);
+  }
+
+  async askReplacementCard(hit) {
+    const { customerKey, pending } = hit;
+    pending.heldCard = null;
+    const sent = await this.sendRateDeskPrompt(pending.deskGroupId, 'Thế a gửi thẻ mới cho e', null);
+    if (sent?.id == null) {
+      Utils.log('❌ Không lấy được id tin xin thẻ thay');
+      return;
+    }
+    pending.stage = 'card';
+    pending.promptMessageId = sent.id;
+    pending.updatedAt = Date.now();
+    this.armRatePending(customerKey);
+    Utils.log(`🃏 Thẻ chưa test hoặc gửi nhầm, chờ thẻ khác cho nhóm ${pending.customerGroupId}`);
+  }
+
+  async extractCardWithOpenAI(message, messageText) {
+    let imageBuffer = null;
+    let mime = 'image/jpeg';
+    if (message?.media || Utils.hasPhoto(message)) {
+      try {
+        const buf = await this.client.downloadMedia(message, {});
+        if (Buffer.isBuffer(buf) && buf.length) imageBuffer = buf;
+        const mediaMime = message?.media?.document?.mimeType;
+        if (mediaMime && String(mediaMime).startsWith('image/')) mime = mediaMime;
+      } catch (error) {
+        Utils.log(`⚠️ Không tải được ảnh thẻ: ${error.message}`);
+      }
+    }
+    return Utils.extractBankCardOpenAI({
+      apiKey: config.openaiApiKey,
+      model: config.openaiModel,
+      text: messageText,
+      imageBuffer,
+      mime,
+    });
+  }
+
+  async deliverHeldCard(hit) {
+    const held = hit.pending.heldCard;
+    if (!held?.info) return;
+    await this.deliverParsedCard(hit, held.image, held.info);
+  }
+
+  async deliverParsedCard(hit, image, info) {
+    const { customerKey, pending } = hit;
+    const caption = Utils.formatCardCaption(info);
+    try {
+      if (image) {
+        const { CustomFile } = require('telegram/client/uploads');
+        const file = new CustomFile('card.jpg', image.length, '', image);
+        await this.client.sendFile(pending.customerGroupId, {
+          file,
+          caption,
+          replyTo: pending.askMessageId,
+        });
+      } else {
+        await this.sendReply(pending.customerGroupId, pending.askMessageId, caption);
+      }
+    } catch (error) {
+      Utils.log(`❌ Không gửi được thẻ sang ${pending.customerGroupId}: ${error.message}`);
+      return;
+    }
+    const record = this.settings.rateDesk?.customers?.[customerKey];
+    if (record) {
+      record.lastCardSig = `stk:${info.account}`;
+      Utils.saveSettings(this.settings);
+    }
+    this.clearRatePending(customerKey);
+    Utils.log(`🃏 Đã gửi thẻ ${info.bank} ${info.account} cho nhóm ${pending.customerGroupId}`);
+  }
+
+  async handleOkxCommand(chatId, messageId) {
+    await this.replyP2pList(chatId, messageId, 'OKX', () => Utils.listOkxMerchants({
+      amount: 100000000,
+      skip: 1,
+      count: 10,
+    }));
+  }
+
+  async handleBinanCommand(chatId, messageId) {
+    await this.replyP2pList(chatId, messageId, 'Binance', () => Utils.listBinanceMerchants({
+      amount: 100000000,
+      skip: 1,
+      count: 10,
+    }));
+  }
+
+  async handleBybitCommand(chatId, messageId) {
+    await this.replyP2pList(chatId, messageId, 'Bybit', () => Utils.listBybitMerchants({
+      amount: 100000000,
+      skip: 1,
+      count: 10,
+    }));
+  }
+
+  async replyP2pList(chatId, messageId, exchange, load) {
+    try {
+      const text = await load();
+      await this.sendReply(chatId, messageId, text || `Không lấy được giá ${exchange}.`);
+    } catch (error) {
+      Utils.log(`❌ /${exchange.toLowerCase()} lỗi: ${error.message}`);
+      await this.sendReply(chatId, messageId, `Không lấy được giá ${exchange}.`);
+    }
+  }
+
+  async handleHuilvCommand(args, chatId, messageId) {
+    Utils.ensureRateDesk(this.settings);
+    const action = (args[0] || '').toLowerCase();
+
+    if (!action || action === 'help') {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ /huilv set <id nhóm khách> <id nhóm báo giá> <@người hoặc id> ...\n/huilv on <id nhóm khách>\n/huilv pause <id nhóm khách>\n/huilv off <id nhóm khách>\n/huilv list'
+      );
+      return;
+    }
+
+    if (action === 'on' || action === 'pause') {
+      const customerId = args[1];
+      if (!customerId || !/^-?\d+$/.test(customerId)) {
+        await this.sendReply(
+          chatId,
+          messageId,
+          action === 'on'
+            ? '❗ /huilv on <id nhóm khách>'
+            : '❗ /huilv pause <id nhóm khách>'
+        );
+        return;
+      }
+      const rec = this.settings.rateDesk.customers[customerId];
+      if (!rec) {
+        await this.sendReply(chatId, messageId, '❗ Chưa gắn nhóm này. Dùng /huilv set trước.');
+        return;
+      }
+      rec.priceEnabled = action === 'on';
+      Utils.saveSettings(this.settings);
+      await this.sendReply(
+        chatId,
+        messageId,
+        action === 'on'
+          ? `✅ Đã bật giá OKX cho nhóm \`${customerId}\``
+          : `⏸ Đã tắt giá OKX của nhóm \`${customerId}\`. Hỏi thẻ vẫn chạy.`
+      );
+      Utils.log(`💱 Giá OKX nhóm ${customerId} ${action === 'on' ? 'BẬT' : 'TẮT'}`);
+      return;
+    }
+
+    if (action === 'list') {
+      const customers = this.settings.rateDesk.customers;
+      const desks = this.settings.rateDesk.desks;
+      const keys = Object.keys(customers);
+      if (!keys.length) {
+        await this.sendReply(chatId, messageId, '📋 Chưa gắn nhóm khách nào.');
+        return;
+      }
+      const lines = ['📋 Hỏi thẻ và giá OKX', ''];
+      for (const customerId of keys) {
+        const rec = customers[customerId];
+        const deskId = rec.deskGroupId;
+        const tagged = await this.prepareDeskMentions(deskId);
+        const mentions = tagged.length
+          ? tagged.map((user) => this.mentionLabel(user)).join(', ')
+          : '(không tag)';
+        const price = rec.priceEnabled === true ? 'BẬT' : 'TẮT';
+        lines.push(`Khách \`${customerId}\` → thẻ \`${deskId}\``);
+        lines.push(`Giá OKX: ${price}`);
+        lines.push(`Tag: ${mentions}`);
+      }
+      await this.sendReply(chatId, messageId, lines.join('\n'));
+      return;
+    }
+
+    if (action === 'off') {
+      const customerId = args[1];
+      if (!customerId || !/^-?\d+$/.test(customerId)) {
+        await this.sendReply(chatId, messageId, '❗ /huilv off <id nhóm khách>');
+        return;
+      }
+      if (!this.settings.rateDesk.customers[customerId]) {
+        await this.sendReply(chatId, messageId, '❗ Không thấy nhóm khách này');
+        return;
+      }
+      const deskId = this.settings.rateDesk.customers[customerId].deskGroupId;
+      delete this.settings.rateDesk.customers[customerId];
+      this.clearRatePending(customerId);
+      const stillUsed = Object.values(this.settings.rateDesk.customers).some(
+        (rec) => rec && String(rec.deskGroupId) === String(deskId)
+      );
+      if (!stillUsed && deskId) delete this.settings.rateDesk.desks[deskId];
+      Utils.saveSettings(this.settings);
+      await this.sendReply(chatId, messageId, `✅ Đã gỡ nhóm khách \`${customerId}\``);
+      return;
+    }
+
+    if (action !== 'set') {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ /huilv set <id nhóm khách> <id nhóm báo giá> <@người hoặc id> ...'
+      );
+      return;
+    }
+
+    const customerId = args[1];
+    const deskId = args[2];
+    const mentions = args.slice(3);
+    if (!customerId || !deskId || !/^-?\d+$/.test(customerId) || !/^-?\d+$/.test(deskId)) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ /huilv set <id nhóm khách> <id nhóm báo giá> <@người hoặc id> ...'
+      );
+      return;
+    }
+    const stored = [];
+    const labels = [];
+    const missing = [];
+    for (const raw of mentions) {
+      const token = String(raw || '').trim();
+      const usernameOk = /^@?[A-Za-z][A-Za-z0-9_]{4,31}$/.test(token);
+      const idOk = /^\d+$/.test(token);
+      if (!usernameOk && !idOk) continue;
+      try {
+        const user = await this.loadMentionUser(token);
+        const record = this.mentionRecord(user);
+        if (!record?.id || !record.accessHash) throw new Error('thiếu id');
+        stored.push(record);
+        labels.push(this.mentionLabel(user));
+      } catch (error) {
+        missing.push(token);
+        Utils.log(`⚠️ /huilv set không thấy ${token}: ${error.message}`);
+      }
+    }
+    if (!stored.length || missing.length) {
+      const why = missing.length
+        ? `Không tìm thấy: ${missing.join(', ')}`
+        : 'Cần ít nhất một @username hoặc user id để tag';
+      await this.sendReply(chatId, messageId, `❗ ${why}`);
+      return;
+    }
+    if (!this.settings.rateDesk.desks[deskId]) this.settings.rateDesk.desks[deskId] = {};
+    this.settings.rateDesk.desks[deskId].mentions = stored;
+    const previous = this.settings.rateDesk.customers[customerId] || {};
+    this.settings.rateDesk.customers[customerId] = {
+      ...previous,
+      deskGroupId: deskId,
+      priceEnabled: previous.priceEnabled === true,
+    };
+    Utils.saveSettings(this.settings);
+    await this.sendReply(
+      chatId,
+      messageId,
+      `✅ Đã gắn hỏi thẻ: nhóm khách \`${customerId}\` → \`${deskId}\`\nTag: ${labels.join(', ')}\nGiá OKX nhóm này: ${previous.priceEnabled === true ? 'BẬT' : 'TẮT'}. Bật bằng /huilv on ${customerId}`
+    );
+    Utils.log(`💱 /huilv set khách ${customerId} → ${deskId} tag ${labels.join(', ')}`);
   }
 
   // Helper để send reply

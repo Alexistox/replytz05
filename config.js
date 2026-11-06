@@ -27,6 +27,10 @@ module.exports = {
   copyAllMaxCopy: parseInt(process.env.COPYALL_MAX_COPY || '5000', 10),
   // /bdl & /bdls: tối đa số id mỗi lần — env BDL_MAX_RANGE (mặc định 200, đọc qua Utils.getBdlMaxRange)
 
+  // Tách thông tin thẻ. .env: OPENAI_API_KEY, tùy chọn OPENAI_MODEL
+  openaiApiKey: process.env.OPENAI_API_KEY || '',
+  openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+
   /** User ID Telegram luôn có quyền admin (không thể gỡ bằng /adremove). .env: PERMANENT_ADMIN_USER_IDS */
   permanentAdminUserIds: envList('PERMANENT_ADMIN_USER_IDS'),
 
@@ -40,6 +44,14 @@ module.exports = {
     forwardRules: [], // Rules cho auto forward: { sourceGroupId, destGroupId, trigger, createdBy, createdTime, status }
     mirrorTriggers: {}, // Mirror 1/2/3: { [groupBId]: [userId, ...] } — chỉ user trong list mới mirror về A
     copyAllWatermark: {}, // /copyall & /newcopy: { "sourceId_destId": lastMessageId }
-    adminUsers: [] // Danh sách user IDs có quyền admin: [userId1, userId2, ...]
+    adminUsers: [], // Danh sách user IDs có quyền admin: [userId1, userId2, ...]
+    rateDesk: {
+      priceEnabled: true,
+      markup: 230,
+      amount: 100000000,
+      row: 5,
+      desks: {},
+      customers: {}
+    }
   }
 }; 
