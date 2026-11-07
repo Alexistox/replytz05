@@ -29,6 +29,7 @@ class BankTransactionUserbot {
     this.migrateCopyAllWatermark();
     this.migrateMirrorTriggers();
     this.migrateRateDesk();
+    this.migrateCopyPolicy();
     
     Utils.log('🤖 Bank Transaction Userbot khởi tạo');
     Utils.log(`📊 Chế độ: Reply theo từng nhóm`);
@@ -100,6 +101,15 @@ class BankTransactionUserbot {
       Utils.saveSettings(this.settings);
       Utils.log('✅ Đã khởi tạo mirrorTriggers');
     }
+  }
+
+  migrateCopyPolicy() {
+    if (typeof this.settings.copyPolicyEnabled !== 'boolean') {
+      const v = process.env.COPY_POLICY_FILTER;
+      this.settings.copyPolicyEnabled = v !== '0' && v !== 'false';
+      Utils.saveSettings(this.settings);
+    }
+    Utils.setCopyPolicyEnabled(this.settings.copyPolicyEnabled);
   }
 
   migrateRateDesk() {
@@ -835,6 +845,14 @@ class BankTransactionUserbot {
         await this.handleTriggerCommand(args, chatId, messageId);
         break;
 
+      case '/policy':
+        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin mới có thể sử dụng lệnh này');
+          return;
+        }
+        await this.handlePolicyCommand(args, chatId, messageId);
+        break;
+
       case '/setforward':
         if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
           await this.sendReply(chatId, messageId, '');
@@ -1305,7 +1323,9 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 
 **Giới hạn & lưu ý:** số tin tối đa mỗi lần quét/gửi cấu hình trong \`config.js\` (\`copyAllMaxCollect\`, \`copyAllMaxCopy\`) hoặc env \`COPYALL_MAX_COLLECT\` / \`COPYALL_MAX_COPY\`; mặc định 5000 / 3000. Có delay chống flood — tăng quá cao dễ FLOOD_WAIT. Một số loại (poll, v.v.) có thể chỉ forward. Album rất lớn có thể không gom đủ. Hết cap thì dùng /newcopy, không chạy lại /copyall cùng mốc.
 
-**Lọc khi copy:** bỏ dòng caption/chữ có dấu hiệu quảng cáo hoặc cờ bạc (tên nhà cái, đăng ký nhận thưởng, link lạ, từ khóa tiếng Trung/emoji spam cờ bạc…). Tin chỉ chữ mà toàn nội dung lọc hết thì không gửi; forward giữ caption gốc nên có thể bỏ qua nếu caption toàn QC/cờ bạc. Tắt lọc: env \`COPY_POLICY_FILTER=0\`.
+**Lọc khi copy:** bỏ dòng caption/chữ có dấu hiệu quảng cáo hoặc cờ bạc (tên nhà cái, đăng ký nhận thưởng, link lạ, từ khóa tiếng Trung/emoji spam cờ bạc…). Tin chỉ chữ mà toàn nội dung lọc hết thì không gửi; forward giữ caption gốc nên có thể bỏ qua nếu caption toàn QC/cờ bạc.
+/policy on — Bật lọc
+/policy off — Tắt lọc. Dòng số tiền có chữ 出款 được giữ nguyên
 
 **Commands - Forward (Chuyển tiếp tự động):**
 /setforward [groupA] [groupB] [trigger] - Thiết lập auto-forward
@@ -1774,6 +1794,25 @@ Mỗi \`/pic2 on\` **thêm** rule mới trong nhóm (không ghi đè). Sau khi t
   }
 
   // ================= FORWARD COMMANDS HANDLERS =================
+
+  async handlePolicyCommand(args, chatId, messageId) {
+    const action = (args[0] || '').toLowerCase();
+    if (action !== 'on' && action !== 'off') {
+      const state = Utils.isCopyPolicyFilterEnabled() ? 'BẬT' : 'TẮT';
+      await this.sendReply(chatId, messageId, `Lọc QC/cờ bạc khi copy: ${state}\n/policy on — bật\n/policy off — tắt`);
+      return;
+    }
+    const enabled = action === 'on';
+    this.settings.copyPolicyEnabled = enabled;
+    Utils.setCopyPolicyEnabled(enabled);
+    Utils.saveSettings(this.settings);
+    await this.sendReply(
+      chatId,
+      messageId,
+      enabled ? '✅ Đã bật lọc QC/cờ bạc khi copy.' : '⏸ Đã tắt lọc QC/cờ bạc khi copy.'
+    );
+    Utils.log(`🧹 /policy ${action}`);
+  }
 
   // Xử lý command /setforward2 (forward từ bất kỳ nhóm nào đến 1 nhóm cụ thể)
   async handleSetForward2Command(args, chatId, messageId, originalMessage) {

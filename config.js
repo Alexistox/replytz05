@@ -38,6 +38,7 @@ module.exports = {
   defaultSettings: {
     replyMessage: '1', // Tin nhắn reply
     calEnabled: false, // /cal on|on admin|off (admin) — toàn bot, mọi nhóm/chat
+    copyPolicyEnabled: true, // /policy on|off — lọc QC/cờ bạc khi copy và setforward
     calAdminOnly: false, // khi true: chỉ admin mới gửi biểu thức được tính (cần /cal on admin)
     groupSettings: {}, // Mỗi nhóm: { replyEnabled }
     pic2Settings: {}, // Pic2: { [groupId]: [ { id, enabled, targetUser, replyMessage }, ... ] }

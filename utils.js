@@ -379,8 +379,18 @@ class Utils {
     return 'mixed';
   }
 
-  /** Tắt bộ lọc: COPY_POLICY_FILTER=0 hoặc false */
+  /** null: theo env. true/false: lệnh /policy vừa đặt. */
+  static copyPolicyEnabled = null;
+
+  static setCopyPolicyEnabled(enabled) {
+    Utils.copyPolicyEnabled = enabled === true;
+  }
+
+  /** Tắt bộ lọc: /policy off, hoặc COPY_POLICY_FILTER=0 khi chưa có lệnh. */
   static isCopyPolicyFilterEnabled() {
+    if (Utils.copyPolicyEnabled === true || Utils.copyPolicyEnabled === false) {
+      return Utils.copyPolicyEnabled;
+    }
     const v = process.env.COPY_POLICY_FILTER;
     return v !== '0' && v !== 'false';
   }
