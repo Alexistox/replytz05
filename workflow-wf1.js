@@ -26,9 +26,11 @@ const BTN = {
   // Chỉ nhận diện nút quay lại rõ ràng (tránh khớp nhầm field khác)
   back: /quay\s*l[aạ]i|^back$|«|‹|⬅️/i,
   backLoose: /quay\s*l[aạ]i|back|h[uủ]y|cancel|«|‹|⬅️/i,
-  // Button sang loạt giao dịch tiếp theo
+  // Button sang loạt giao dịch tiếp theo / trang trước
   nextPage:
     /ti[eế]p(\s*theo)?|next|sau|trang\s*sau|»|›|➡️|xem\s*th[eê]m|giao\s*d[iị]ch\s*ti[eế]p/i,
+  prevPage:
+    /tr[uư][oớ]c|prev|before|trang\s*tr[uư][oớ]c|«|‹|⬅️|v[eề]\s*tr[uư][oớ]c/i,
 };
 
 /**
@@ -539,7 +541,7 @@ class WfRunner {
 
   isLikelyTransactionButton(text) {
     const t = String(text || '');
-    if (BTN.back.test(t) || BTN.nextPage.test(t)) return false;
+    if (BTN.back.test(t) || BTN.nextPage.test(t) || BTN.prevPage.test(t)) return false;
     if (BTN.editTxMenu.test(t) || BTN.editTx.test(t)) return false;
     if (BTN.editTime.test(t)) return false;
     if (BTN.accountValid.test(t)) return false;
@@ -680,138 +682,175 @@ class WfRunner {
     return (await this.getLatestMessage(peer)) || msg;
   }
 
+  /** Về trang 1 của list GD (bấm Trước đến hết). */
+  async goToFirstTxPage(msg, peer) {
+    for (let i = 0; i < 15; i++) {
+      const flat = await this.getButtons(msg);
+      const prev = findButton(flat, BTN.prevPage);
+      if (!prev) break;
+      msg = await this.clickButton(msg, prev.text, peer);
+      await sleep(500);
+    }
+    return msg;
+  }
+
+  /**
+   * Quét mọi trang list GD đến khi một vòng full (hết trang) không còn GD lệch thời gian.
+   * Sau mỗi lần sửa, list sắp xếp lại theo thời gian → clear và quét lại trang hiện tại;
+   * hết trang mà vẫn có sửa trong vòng → về trang 1, quét vòng mới.
+   */
   async processTransactionLoop(controlChatId, listMsg) {
     const session = this.getSession(controlChatId);
     if (!session) return;
     const { peer, replyTo } = session;
     let msg = listMsg;
-    let pass = 0;
-    const maxPass = 15;
+    const maxSweeps = 25;
+    const maxPagesPerSweep = 40;
 
-    while (pass < maxPass) {
-      pass += 1;
+    for (let sweep = 1; sweep <= maxSweeps; sweep++) {
       if (!this.getSession(controlChatId)) {
         await this.notify(controlChatId, `🛑 ${this.label} đã hủy.`, replyTo);
         return;
       }
 
-      let flat = await this.getButtons(msg);
-      let txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
-      if (!txButtons.length) {
-        const next = findButton(flat, BTN.nextPage);
-        if (next) {
-          msg = await this.clickButton(msg, BTN.nextPage, peer);
+      let fixedThisSweep = 0;
+      await this.notify(
+        controlChatId,
+        `🔁 Vòng quét ${sweep}: duyệt mọi trang đến khi hết chỗ sai…`,
+        replyTo
+      );
+      msg = await this.goToFirstTxPage(msg, peer);
+
+      for (let page = 1; page <= maxPagesPerSweep; page++) {
+        if (!this.getSession(controlChatId)) return;
+
+        // Quét trang hiện tại đến khi không còn GD cần sửa trên trang này
+        // (sau mỗi lần sửa list đổi chỗ → quét lại từ đầu trang)
+        const seenOk = new Set();
+        let pageGuard = 0;
+        while (pageGuard < 40) {
+          pageGuard += 1;
+          if (!this.getSession(controlChatId)) return;
+
+          let flat = await this.getButtons(msg);
+          const txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
+          const candidate = txButtons.find((b) => !seenOk.has(b.text));
+
+          if (!candidate) {
+            // Không còn GD chưa kiểm tra trên trang này
+            break;
+          }
+
+          const label = candidate.text;
+          await this.notify(
+            controlChatId,
+            `🔎 [V${sweep}·T${page}] Mở: ${label.slice(0, 100)}`,
+            replyTo
+          );
+          let detail = await this.clickButton(msg, label, peer);
+          const body = String(detail?.message || detail?.text || '');
+          const contentTime = extractContentTime(body);
+          const fieldTime = extractFieldTime(body);
+          const rawField = extractFieldTimeRaw(body);
+
+          if (!contentTime) {
+            session.stats.errors += 1;
+            await this.notify(
+              controlChatId,
+              `⚠️ Không parse được thời gian Nội dung — bỏ qua.\n${body.slice(0, 350)}`,
+              replyTo
+            );
+            msg = await this.returnToTransactionList(detail, peer, {
+              afterEdit: false,
+            });
+            seenOk.add(label);
+            continue;
+          }
+
+          if (shouldSkipTimeEdit(contentTime, fieldTime, rawField)) {
+            session.stats.skipped += 1;
+            await this.notify(
+              controlChatId,
+              `⏭️ Đã đúng (${contentTime}, không giây) — bỏ qua.`,
+              replyTo
+            );
+            msg = await this.returnToTransactionList(detail, peer, {
+              afterEdit: false,
+            });
+            seenOk.add(label);
+            continue;
+          }
+
+          const reason = fieldTimeHasSeconds(rawField)
+            ? 'còn giây'
+            : fieldTime
+              ? 'lệch Nội dung'
+              : 'trống';
+          await this.notify(
+            controlChatId,
+            `✏️ Sửa (${reason}): \`${rawField || fieldTime || '(trống)'}\` → \`${contentTime}\``,
+            replyTo
+          );
+          try {
+            detail = await this.editTimeOnDetail(detail, peer, contentTime);
+            session.stats.fixed += 1;
+            fixedThisSweep += 1;
+            await this.notify(
+              controlChatId,
+              `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n↩️ Quay lại → chờ bảng mới → Quay lại…\n(List đổi theo thời gian — quét lại trang/các trang)`,
+              replyTo
+            );
+            msg = await this.returnToTransactionList(detail, peer, {
+              afterEdit: true,
+            });
+            // List đã sắp xếp lại — xóa seenOk, quét lại trang từ đầu
+            seenOk.clear();
+          } catch (e) {
+            session.stats.errors += 1;
+            await this.notify(
+              controlChatId,
+              `⚠️ Không chỉnh được: ${e.message}`,
+              replyTo
+            );
+            msg = await this.returnToTransactionList(detail, peer, {
+              afterEdit: false,
+            });
+            seenOk.add(label);
+          }
+        }
+
+        // Hết GD cần sửa trên trang → Sang trang sau nếu có
+        const flat = await this.getButtons(msg);
+        const nextBtn = findButton(flat, BTN.nextPage);
+        if (nextBtn) {
+          await this.notify(
+            controlChatId,
+            `👉 Trang sau: ${nextBtn.text}`,
+            replyTo
+          );
+          msg = await this.clickButton(msg, nextBtn.text, peer);
           continue;
         }
+
+        // Hết trang trong vòng này
+        break;
+      }
+
+      if (fixedThisSweep === 0) {
+        await this.notify(
+          controlChatId,
+          `✨ Vòng ${sweep}: không còn GD lệch trên mọi trang.`,
+          replyTo
+        );
         break;
       }
 
       await this.notify(
         controlChatId,
-        `📄 Lượt ${pass}: ${txButtons.length} button giao dịch — quét…`,
+        `🔄 Vòng ${sweep} đã sửa ${fixedThisSweep} GD (list đổi chỗ) — về trang 1 quét lại toàn bộ…`,
         replyTo
       );
-
-      let fixedThisPass = 0;
-      // Snapshot texts — list may change after edits
-      const labels = txButtons.map((b) => b.text);
-
-      for (const label of labels) {
-        if (!this.getSession(controlChatId)) return;
-
-        // Refresh list message buttons each time
-        flat = await this.getButtons(msg);
-        if (!findButton(flat, label)) {
-          continue;
-        }
-
-        await this.notify(
-          controlChatId,
-          `🔎 Mở: ${label.slice(0, 100)}`,
-          replyTo
-        );
-        let detail = await this.clickButton(msg, label, peer);
-        const body = String(detail?.message || detail?.text || '');
-        const contentTime = extractContentTime(body);
-        const fieldTime = extractFieldTime(body);
-        const rawField = extractFieldTimeRaw(body);
-
-        if (!contentTime) {
-          session.stats.errors += 1;
-          await this.notify(
-            controlChatId,
-            `⚠️ Không parse được thời gian Nội dung — bỏ qua (có thể không phải dòng GD).\n${body.slice(0, 350)}`,
-            replyTo
-          );
-          msg = await this.returnToTransactionList(detail, peer, {
-            afterEdit: false,
-          });
-          continue;
-        }
-
-        // Chỉ bỏ qua khi đã khớp Nội dung VÀ mục Thời gian không còn giây
-        if (shouldSkipTimeEdit(contentTime, fieldTime, rawField)) {
-          session.stats.skipped += 1;
-          await this.notify(
-            controlChatId,
-            `⏭️ Đã đúng (${contentTime}, không giây) — bỏ qua.`,
-            replyTo
-          );
-          msg = await this.returnToTransactionList(detail, peer, {
-            afterEdit: false,
-          });
-          continue;
-        }
-
-        const reason = fieldTimeHasSeconds(rawField)
-          ? 'còn giây'
-          : fieldTime
-            ? 'lệch Nội dung'
-            : 'trống';
-        await this.notify(
-          controlChatId,
-          `✏️ Sửa (${reason}): \`${rawField || fieldTime || '(trống)'}\` → \`${contentTime}\``,
-          replyTo
-        );
-        try {
-          detail = await this.editTimeOnDetail(detail, peer, contentTime);
-          session.stats.fixed += 1;
-          fixedThisPass += 1;
-          await this.notify(
-            controlChatId,
-            `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n↩️ Quay lại → chờ bảng mới → Quay lại…`,
-            replyTo
-          );
-          msg = await this.returnToTransactionList(detail, peer, {
-            afterEdit: true,
-          });
-        } catch (e) {
-          session.stats.errors += 1;
-          await this.notify(controlChatId, `⚠️ Không chỉnh được: ${e.message}`, replyTo);
-          msg = await this.returnToTransactionList(detail, peer, {
-            afterEdit: false,
-          });
-        }
-      }
-
-      // Hết GD trên trang hiện tại → bấm button loạt tiếp theo (nếu có)
-      flat = await this.getButtons(msg);
-      const nextBtn = findButton(flat, BTN.nextPage);
-      if (nextBtn) {
-        await this.notify(
-          controlChatId,
-          `👉 Sang loạt giao dịch tiếp: ${nextBtn.text}`,
-          replyTo
-        );
-        msg = await this.clickButton(msg, nextBtn.text, peer);
-        continue;
-      }
-
-      // Không còn trang sau; nếu lượt này không sửa gì → xong
-      if (fixedThisPass === 0) {
-        break;
-      }
-      // Có sửa nhưng không còn nút next — quét lại trang hiện tại một vòng
+      msg = await this.goToFirstTxPage(msg, peer);
     }
 
     const s = this.getSession(controlChatId);
@@ -820,7 +859,7 @@ class WfRunner {
     await this.notify(
       controlChatId,
       [
-        `🏁 ${this.label} xong — không còn giao dịch lệch thời gian (hoặc hết danh sách).`,
+        `🏁 ${this.label} xong — đã quét hết trang đến khi không còn chỗ sai.`,
         `Đã sửa: ${stats.fixed}`,
         `Bỏ qua (đã trùng): ${stats.skipped}`,
         `Lỗi: ${stats.errors}`,

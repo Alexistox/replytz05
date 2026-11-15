@@ -9,7 +9,7 @@ Hai workflow **khác nhau**, mỗi cái một bot riêng.
 /wf1 on
 ```
 
-Luồng: `/start` → button 1 → 2 → tài khoản còn hạn → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung (`151126-18:34:26` → không giây) → Quay lại ×2 → trang sau.
+Luồng: `/start` → button 1 → 2 → tài khoản còn hạn → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung (`151126-18:34:26` → không giây) → Quay lại → chờ bảng mới → Quay lại. Sau mỗi lần sửa list đổi chỗ theo thời gian — bot quét lại trang/các trang (nút Sau) đến khi một vòng full không còn GD lệch.
 
 Hủy: `/wf1 off`
 
