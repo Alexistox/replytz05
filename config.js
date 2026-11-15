@@ -60,12 +60,12 @@ module.exports = {
 
   // Default settings
   defaultSettings: {
-    // workflow.wf1BotPeer / wf2BotPeer — mỗi WF một bot khác nhau
+    // workflow.wf1BotPeer / wf2BotPeer / wf3BotPeer — mỗi WF một bot
     replyMessage: '1', // Tin nhắn reply
     calEnabled: false, // /cal on|on admin|off (admin) — toàn bot, mọi nhóm/chat
     copyPolicyEnabled: true, // /policy on|off — lọc QC/cờ bạc khi copy và setforward
     calAdminOnly: false, // khi true: chỉ admin mới gửi biểu thức được tính (cần /cal on admin)
-    workflow: {}, // { wf1BotPeer, wf2BotPeer, wfBotPeer? (legacy→wf1) }
+    workflow: {}, // { wf1BotPeer, wf2BotPeer, wf3BotPeer, wfBotPeer? (legacy→wf1) }
     groupSettings: {}, // Mỗi nhóm: { replyEnabled, aiEnabled?, aiPrompt?, claudeCodePilot? }
     aiProvider: null, // override runtime: openai|claude|grok (null = dùng env)
     aiModel: null,

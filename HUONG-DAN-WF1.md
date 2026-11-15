@@ -1,17 +1,28 @@
-# WF1 / WF2
+# WF1 / WF2 / WF3
 
-Hai workflow **khác nhau**, mỗi cái một bot riêng.
+Ba workflow **khác nhau**, mỗi cái một bot riêng.
 
-## WF1 — sửa thời gian giao dịch trên bot
+## WF1 — sửa thời gian **không giây**
 
 ```text
 /wf1bot @bot_A
 /wf1 on
 ```
 
-Luồng: `/start` → button 1 → 2 → tài khoản còn hạn → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung (`151126-18:34:26` → không giây) → Quay lại → chờ bảng mới → Quay lại. Sau mỗi lần sửa list đổi chỗ theo thời gian — bot quét lại trang/các trang (nút Sau) đến khi một vòng full không còn GD lệch.
+`151126-18:34:26` → chỉnh thành `15/11/2026 18:34` (bỏ giây).
 
-Hủy: `/wf1 off`
+## WF3 — giống WF1 nhưng **có giây**
+
+```text
+/wf3bot @bot_C
+/wf3 on
+```
+
+`151126-18:34:26` → chỉnh thành `15/11/2026 18:34:26` (giữ giây).
+
+Luồng chung WF1/WF3: `/start` → button 1 → 2 → tài khoản còn hạn → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung → Quay lại → chờ bảng mới → Quay lại. Quét nhiều trang đến khi hết GD lệch.
+
+Hủy: `/wf1 off` hoặc `/wf3 off`
 
 ## WF2 — gửi lần lượt list `/bdsd` lên bot khác
 

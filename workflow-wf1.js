@@ -1,9 +1,9 @@
 /**
- * Workflow WF1 — điều khiển bot Telegram khác qua inline/reply keyboard.
+ * Workflow WF1 / WF3 — điều khiển bot Telegram khác qua inline/reply keyboard.
  *
- * Cấu hình: /wf1bot|/wfbot @bot
- * Chạy: /wf1 on
- * (WF2 — gửi /bdsd — xem workflow-wf2.js)
+ * WF1: /wf1bot + /wf1 — sửa thời gian KHÔNG giây (15/11/2026 18:34)
+ * WF3: /wf3bot + /wf3 — giống WF1 nhưng GIỮ giây (15/11/2026 18:34:26)
+ * WF2: gửi /bdsd — xem workflow-wf2.js
  *
  * Luồng:
  * 1) /start → bấm button đầu → button thứ 2 → "tài khoản còn hạn"
@@ -35,8 +35,9 @@ const BTN = {
 
 /**
  * Formats trong Nội dung / Thời gian:
- * - Compact: 151126-18:34:26 → DDMMYY + giờ (15/11/2026 18:34) — không dùng giây khi chỉnh
- * - Thường: 15/11/2026 18:34:26 hoặc 15/11/2026 18:34
+ * - Compact: 151126-18:34:26 → DDMMYY + giờ
+ * - WF1: 15/11/2026 18:34 (bỏ giây)
+ * - WF3: 15/11/2026 18:34:26 (giữ giây)
  */
 const DT_SLASH_RE =
   /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})[,\s]+(\d{1,2}:\d{2}(?::\d{2})?)/;
@@ -47,9 +48,11 @@ function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
-/** Chuẩn hóa để so sánh / gửi chỉnh sửa — không có giây */
-function formatEditTime(day, month, year, hh, mm) {
-  return `${pad2(day)}/${pad2(month)}/${year} ${pad2(hh)}:${pad2(mm)}`;
+/** Chuẩn hóa để so sánh / gửi chỉnh sửa */
+function formatEditTime(day, month, year, hh, mm, ss = 0, keepSeconds = false) {
+  const base = `${pad2(day)}/${pad2(month)}/${year} ${pad2(hh)}:${pad2(mm)}`;
+  if (keepSeconds) return `${base}:${pad2(ss != null ? ss : 0)}`;
+  return base;
 }
 
 function parseTimePart(timePart) {
@@ -57,11 +60,12 @@ function parseTimePart(timePart) {
   return {
     hh: parseInt(hh, 10),
     mm: parseInt(mm, 10),
-    ss: ss != null ? parseInt(ss, 10) : 0,
+    ss: ss != null && ss !== '' ? parseInt(ss, 10) : 0,
+    hasSeconds: ss != null && ss !== '',
   };
 }
 
-function parseSlashDateTime(datePart, timePart) {
+function parseSlashDateTime(datePart, timePart, keepSeconds = false) {
   const d = datePart.replace(/[.\-]/g, '/');
   const [a, b, c] = d.split('/');
   let day;
@@ -81,60 +85,56 @@ function parseSlashDateTime(datePart, timePart) {
     year = c.length === 2 ? `20${c}` : c;
   }
   const t = parseTimePart(timePart);
-  return formatEditTime(day, month, year, t.hh, t.mm);
+  return formatEditTime(day, month, year, t.hh, t.mm, t.ss, keepSeconds);
 }
 
-/** 151126-18:34:26 → DD=15 MM=11 YY=26 → 15/11/2026 18:34 */
-function parseCompactDateTime(match) {
+/** 151126-18:34:26 → 15/11/2026 18:34 hoặc 18:34:26 */
+function parseCompactDateTime(match, keepSeconds = false) {
   const day = parseInt(match[1], 10);
   const month = parseInt(match[2], 10);
   const yy = match[3];
   const year = yy.length === 2 ? `20${yy}` : yy;
   const t = parseTimePart(match[4]);
-  return formatEditTime(day, month, year, t.hh, t.mm);
+  return formatEditTime(day, month, year, t.hh, t.mm, t.ss, keepSeconds);
 }
 
-function parseAnyDateTimeInChunk(chunk) {
+function parseAnyDateTimeInChunk(chunk, keepSeconds = false) {
   const raw = String(chunk || '');
   const compact = raw.match(DT_COMPACT_RE);
-  if (compact) return parseCompactDateTime(compact);
+  if (compact) return parseCompactDateTime(compact, keepSeconds);
   const slash = raw.match(DT_SLASH_RE);
-  if (slash) return parseSlashDateTime(slash[1], slash[2]);
+  if (slash) return parseSlashDateTime(slash[1], slash[2], keepSeconds);
   return null;
 }
 
-function extractDateTimeFromText(text, labelRe) {
+function extractDateTimeFromText(text, labelRe, keepSeconds = false) {
   const raw = String(text || '');
   if (labelRe) {
     const m = raw.match(labelRe);
     if (m) {
       const chunk = m[1] || m[0];
-      const parsed = parseAnyDateTimeInChunk(chunk);
+      const parsed = parseAnyDateTimeInChunk(chunk, keepSeconds);
       if (parsed) return parsed;
     }
   }
-  // Ưu tiên compact trong toàn bộ text
   const compactAll = [...raw.matchAll(new RegExp(DT_COMPACT_RE.source, 'g'))];
-  if (compactAll.length) return parseCompactDateTime(compactAll[0]);
+  if (compactAll.length) return parseCompactDateTime(compactAll[0], keepSeconds);
   const slashAll = [...raw.matchAll(new RegExp(DT_SLASH_RE.source, 'g'))];
-  if (slashAll.length) return parseSlashDateTime(slashAll[0][1], slashAll[0][2]);
+  if (slashAll.length) {
+    return parseSlashDateTime(slashAll[0][1], slashAll[0][2], keepSeconds);
+  }
   return null;
 }
 
-function extractContentTime(text) {
+function extractContentTime(text, keepSeconds = false) {
   return (
-    extractDateTimeFromText(
-      text,
-      /n[oộ]i\s*dung\s*:\s*([^\n]+)/i
-    ) || extractDateTimeFromText(text, null)
+    extractDateTimeFromText(text, /n[oộ]i\s*dung\s*:\s*([^\n]+)/i, keepSeconds) ||
+    extractDateTimeFromText(text, null, keepSeconds)
   );
 }
 
-function extractFieldTime(text) {
-  return extractDateTimeFromText(
-    text,
-    /th[oờ]i\s*gian\s*:\s*([^\n]+)/i
-  );
+function extractFieldTime(text, keepSeconds = false) {
+  return extractDateTimeFromText(text, /th[oờ]i\s*gian\s*:\s*([^\n]+)/i, keepSeconds);
 }
 
 /** Lấy raw text sau "Thời gian:" để biết còn giây hay không */
@@ -143,25 +143,24 @@ function extractFieldTimeRaw(text) {
   return m ? String(m[1]).trim() : '';
 }
 
-/**
- * Mục Thời gian còn giây? (18:34:26 hoặc ...-18:34:26)
- * → vẫn phải chỉnh dù ngày/giờ-phút đã khớp Nội dung.
- */
 function fieldTimeHasSeconds(rawField) {
   const raw = String(rawField || '');
   if (/\d{1,2}:\d{2}:\d{2}/.test(raw)) return true;
   return false;
 }
 
-/** true = đã đúng format cuối (khớp Nội dung và không còn giây) → bỏ qua */
-function shouldSkipTimeEdit(contentTime, fieldTime, rawField) {
+/**
+ * WF1 (keepSeconds=false): bỏ qua khi khớp và field không còn giây.
+ * WF3 (keepSeconds=true): bỏ qua khi khớp cả giây.
+ */
+function shouldSkipTimeEdit(contentTime, fieldTime, rawField, keepSeconds = false) {
   if (!contentTime || !fieldTime) return false;
-  if (fieldTimeHasSeconds(rawField)) return false;
+  if (!keepSeconds && fieldTimeHasSeconds(rawField)) return false;
   return fieldTime === contentTime;
 }
 
 /** Key ổn định của GD (không phụ thuộc thứ tự list sau khi sửa). */
-function extractTxKey(body) {
+function extractTxKey(body, keepSeconds = false) {
   const raw = String(body || '');
   const id =
     raw.match(/S[uử]a\s*Giao\s*D[iị]ch\s*#\s*(\d+)/i) ||
@@ -169,7 +168,7 @@ function extractTxKey(body) {
     raw.match(/\b(FT\d+)\b/i);
   if (id) return `id:${id[1]}`;
   const amt = raw.match(/S[oố]\s*ti[eề]n:\s*([^\n]+)/i);
-  const ct = extractContentTime(raw);
+  const ct = extractContentTime(raw, keepSeconds);
   return `a:${(amt && amt[1] || '').trim()}|t:${ct || ''}`;
 }
 
@@ -203,15 +202,34 @@ function findButton(flat, predicate) {
 class WfRunner {
   /**
    * @param {object} bot
-   * @param {{ id?: string, label?: string }} [opts] id = wf1|wf2 — mỗi cái một bot riêng
+   * @param {{ id?: string, label?: string, keepSeconds?: boolean }} [opts]
+   *   id = wf1|wf3 — mỗi cái một bot riêng
+   *   keepSeconds = true → WF3 giữ giây khi sửa thời gian
    */
   constructor(bot, opts = {}) {
     this.bot = bot;
     this.id = String(opts.id || 'wf1').toLowerCase();
     this.label = String(opts.label || this.id.toUpperCase());
+    this.keepSeconds = opts.keepSeconds === true;
     this.cmd = '/' + this.id;
     this.cmdBot = '/' + this.id + 'bot';
     this.sessions = new Map();
+  }
+
+  extractContentTime(text) {
+    return extractContentTime(text, this.keepSeconds);
+  }
+
+  extractFieldTime(text) {
+    return extractFieldTime(text, this.keepSeconds);
+  }
+
+  shouldSkipTimeEdit(contentTime, fieldTime, rawField) {
+    return shouldSkipTimeEdit(contentTime, fieldTime, rawField, this.keepSeconds);
+  }
+
+  extractTxKey(body) {
+    return extractTxKey(body, this.keepSeconds);
   }
 
   getSettings() {
@@ -413,7 +431,10 @@ class WfRunner {
         `\`${this.cmd} off\` — hủy`,
         `\`${this.cmd} status\``,
         '',
-        'WF2 (gửi `/bdsd`) là workflow khác — xem `/wf2` / `/wf2bot`.',
+        this.keepSeconds
+          ? 'Sửa thời gian **có giây** (vd `15/11/2026 18:34:26`).'
+          : 'Sửa thời gian **không giây** (vd `15/11/2026 18:34`).',
+        'WF2 (gửi `/bdsd`) — `/wf2` / `/wf2bot`. WF3 (có giây) — `/wf3` / `/wf3bot`.',
       ].join('\n')
     );
   }
@@ -831,9 +852,9 @@ class WfRunner {
           );
           let detail = await this.clickButton(msg, label, peer);
           const body = String(detail?.message || detail?.text || '');
-          const txKey = extractTxKey(body);
-          const contentTime = extractContentTime(body);
-          const fieldTime = extractFieldTime(body);
+          const txKey = this.extractTxKey(body);
+          const contentTime = this.extractContentTime(body);
+          const fieldTime = this.extractFieldTime(body);
           const rawField = extractFieldTimeRaw(body);
 
           // Đã xử lý GD này trước đó → bỏ qua, nhớ label mới (list đổi chỗ)
@@ -860,7 +881,7 @@ class WfRunner {
             continue;
           }
 
-          if (shouldSkipTimeEdit(contentTime, fieldTime, rawField)) {
+          if (this.shouldSkipTimeEdit(contentTime, fieldTime, rawField)) {
             session.stats.skipped += 1;
             doneKeys.add(txKey);
             doneLabels.add(label);
@@ -875,14 +896,14 @@ class WfRunner {
             continue;
           }
 
-          const reason = fieldTimeHasSeconds(rawField)
+          const reason = !this.keepSeconds && fieldTimeHasSeconds(rawField)
             ? 'còn giây'
             : fieldTime
               ? 'lệch Nội dung'
               : 'trống';
           await this.notify(
             controlChatId,
-            `✏️ Sửa (${reason}): \`${rawField || fieldTime || '(trống)'}\` → \`${contentTime}\``,
+            `✏️ Sửa (${reason}): \`${rawField || fieldTime || '(trống)'}\` → \`${contentTime}\`${this.keepSeconds ? ' (có giây)' : ''}`,
             replyTo
           );
           try {
