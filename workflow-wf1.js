@@ -1,8 +1,9 @@
 /**
  * Workflow WF1 — điều khiển bot Telegram khác qua inline/reply keyboard.
  *
- * Cấu hình: /wf1bot|/wfbot @bot  và  /wf2bot @bot khác
- * Chạy: /wf1 on  hoặc  /wf2 on
+ * Cấu hình: /wf1bot|/wfbot @bot
+ * Chạy: /wf1 on
+ * (WF2 — gửi /bdsd — xem workflow-wf2.js)
  *
  * Luồng:
  * 1) /start → bấm button đầu → button thứ 2 → "tài khoản còn hạn"
@@ -395,7 +396,7 @@ class WfRunner {
         `\`${this.cmd} off\` — hủy`,
         `\`${this.cmd} status\``,
         '',
-        'WF1 và WF2 dùng **hai bot khác nhau** (`/wf1bot` vs `/wf2bot`).',
+        'WF2 (gửi `/bdsd`) là workflow khác — xem `/wf2` / `/wf2bot`.',
       ].join('\n')
     );
   }

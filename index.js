@@ -8,6 +8,7 @@ const Utils = require('./utils');
 const Ai = require('./ai');
 const ClaudeCode = require('./claude-code');
 const { WfRunner } = require('./workflow-wf1');
+const { Wf2BdsdRunner, isPureBdsdList } = require('./workflow-wf2');
 const { createControlServer } = require('./control-server');
 
 class BankTransactionUserbot {
@@ -33,7 +34,7 @@ class BankTransactionUserbot {
     /** chatId → timestamp: bỏ qua tin outgoing (echo reply của bot) sau khi /cc trả lời */
     this.claudeCodeSuppressOutUntil = new Map();
     this.wf1 = new WfRunner(this, { id: 'wf1', label: 'WF1' });
-    this.wf2 = new WfRunner(this, { id: 'wf2', label: 'WF2' });
+    this.wf2 = new Wf2BdsdRunner(this);
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -525,6 +526,24 @@ class BankTransactionUserbot {
     this.processingMessages.add(messageKey);
 
     try {
+      // WF2: list thuần /bdsd… (không cần /wf2) — chặn trước parseCommand
+      if (
+        (this.isOwnerOrAdmin(message) || message.out === true) &&
+        (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText))
+      ) {
+        const chatKeyWf2 = String(chatId);
+        const suppressUntilWf2 = this.claudeCodeSuppressOutUntil.get(chatKeyWf2) || 0;
+        if (!(message.out && Date.now() < suppressUntilWf2)) {
+          this.processedMessages.set(messageKey, currentTime);
+          const handledWf2 = await this.wf2.handleIncomingList(
+            chatId,
+            messageText,
+            messageId
+          );
+          if (handledWf2) return;
+        }
+      }
+
       // Kiểm tra commands trước (cho phép chính mình sử dụng commands)
       if (messageText.startsWith('/')) {
         // Mark as processed cho commands
@@ -580,25 +599,23 @@ class BankTransactionUserbot {
         }
       }
 
-      // WF1/WF2: đang chờ user chọn button tài khoản
+      // WF1: đang chờ user chọn button tài khoản
       if (
         messageText.trim() &&
         !String(messageText).startsWith('/') &&
+        this.wf1.isAwaitingUserInput(chatId) &&
         (this.isOwnerOrAdmin(message) || message.out === true)
       ) {
         const chatKeyWf = String(chatId);
         const suppressUntilWf = this.claudeCodeSuppressOutUntil.get(chatKeyWf) || 0;
         if (!(message.out && Date.now() < suppressUntilWf)) {
-          for (const runner of [this.wf1, this.wf2]) {
-            if (!runner.isAwaitingUserInput(chatId)) continue;
-            this.processedMessages.set(messageKey, currentTime);
-            const handled = await runner.handleUserAccountPick(
-              chatId,
-              messageText,
-              messageId
-            );
-            if (handled) return;
-          }
+          this.processedMessages.set(messageKey, currentTime);
+          const handled = await this.wf1.handleUserAccountPick(
+            chatId,
+            messageText,
+            messageId
+          );
+          if (handled) return;
         }
       }
 
@@ -1232,7 +1249,7 @@ class BankTransactionUserbot {
           await this.sendReply(chatId, messageId, '❌ Chỉ admin');
           return;
         }
-        await this.wf2.handleWfCommand(args, chatId, messageId);
+        await this.wf2.handleWfCommand(args, chatId, messageId, messageText);
         break;
     }
   }
@@ -1451,7 +1468,7 @@ class BankTransactionUserbot {
 3. Chuyển tiếp tự động tin nhắn (text, ảnh, video, file, albums) với emoji/text triggers
 4. AI chat theo từng nhóm/DM (Claude/Grok/OpenAI) — **mặc định TẮT**, bật bằng \`/ai on\`
 5. Claude Code pilot (iPhone Telegram → Claude Code trên VPS cầm bot) — \`/cc on\` 👑
-6. WF1/WF2 — điều khiển **hai bot khác nhau** + sửa thời gian GD: \`/wf1bot\` \`/wf1\` · \`/wf2bot\` \`/wf2\` 👑
+6. WF1 — bot khác + sửa thời gian GD: \`/wf1bot\` \`/wf1\` · WF2 — gửi list \`/bdsd\` lên bot khác: \`/wf2bot\` \`/wf2\` 👑
 5. Control API localhost để Cursor/Claude/Grok điều khiển gửi tin, đọc chat, bật AI
 
 **Commands - AI chat (👑 admin, theo từng chat — mặc định TẮT):**
@@ -1569,8 +1586,9 @@ Hỏi thẻ (卡, 银行卡, 要卡, 换卡, 卡号, ka): gửi "1", nhắn nhó
 /ai - AI chat theo chat (👑 /ai on|off|prompt|provider — mặc định tắt; xem mục AI phía trên)
 /cc - Claude Code pilot (👑 /cc on|off | /cc <yêu cầu> — chat từ iPhone qua Telegram)
 /wf1bot|/wfbot - Đặt bot cho WF1 👑
-/wf2bot - Đặt bot khác cho WF2 👑
-/wf1|/wf2 - Chạy workflow sửa thời gian GD (on|off|status) 👑
+/wf1 - WF1 sửa thời gian GD (on|off|status) 👑
+/wf2bot - Đặt bot nhận lệnh /bdsd (WF2) 👑
+/wf2 - WF2 gửi lần lượt list /bdsd (off|status) 👑
 /cal - Máy tính toàn bot (👑 admin: /cal on | /cal on admin | /cal off; xem mục /cal phía trên)
 /status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại

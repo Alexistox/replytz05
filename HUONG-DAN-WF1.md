@@ -1,38 +1,39 @@
-# WF1 / WF2 — Điều khiển bot khác + sửa thời gian giao dịch
+# WF1 / WF2
 
-Hai workflow **giống nhau**, nhưng **mỗi cái một bot riêng**.
+Hai workflow **khác nhau**, mỗi cái một bot riêng.
 
-## Cấu hình bot
+## WF1 — sửa thời gian giao dịch trên bot
 
 ```text
 /wf1bot @bot_A
-/wf2bot @bot_B
-```
-
-Alias WF1: `/wfbot` = `/wf1bot`
-
-## Chạy
-
-```text
 /wf1 on
 ```
 
-hoặc
+Luồng: `/start` → button 1 → 2 → tài khoản còn hạn → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung (`151126-18:34:26` → không giây) → Quay lại ×2 → trang sau.
+
+Hủy: `/wf1 off`
+
+## WF2 — gửi lần lượt list `/bdsd` lên bot khác
 
 ```text
-/wf2 on
+/wf2bot @bot_B
 ```
 
-## Luồng (giống nhau)
+Rồi dán list (mỗi dòng một lệnh):
 
-1. `/start` → button **1** → button **2** → **Tài khoản còn hạn**
-2. Liệt kê button tài khoản → bạn chọn (`1` hoặc tên)
-3. **Chỉnh Giao Dịch** (bỏ qua menu “Chỉnh sửa” nếu không có)
-4. Lặp từng GD:
-   - `Nội dung:` hỗ trợ `151126-18:34:26` → **15/11/2026 18:34**
-   - Mục Thời gian còn giây / lệch → chỉnh thành `dd/mm/yyyy HH:mm`
-   - Sau chỉnh: chờ tin mới → **Quay lại** ×2 → list
-   - Hết trang → button loạt tiếp theo
-5. Dừng khi không còn GD cần sửa
+```text
+/bdsd 0931582074 Abc112112@ LUONG VAN NAM 28830381 2500000 GD: chuyen tien tra no GD 6319A7KD3QX9M2TF 121126-08:14:22
+/bdsd 0931582074 Abc112112@ DO DUY NHUAN 26754321 1200000 GD: IB LUONG VAN NAM CHUYEN KHOAN GD 6319H2PZ8WL4N6RC 121126-15:42:09
+```
 
-Hủy: `/wf1 off` hoặc `/wf2 off`
+Hoặc:
+
+```text
+/wf2
+```
+
+rồi dán list ở tin tiếp theo; hoặc `/wf2` + list trong cùng một tin.
+
+Userbot gửi **từng** `/bdsd` lên bot WF2, chờ reply rồi mới gửi dòng kế.
+
+Hủy: `/wf2 off`
