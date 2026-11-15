@@ -19,16 +19,24 @@ Cần key trong `.env`: `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` t
 
 Đặt `CONTROL_API_TOKEN` trong `.env`. Bot lắng nghe `127.0.0.1:3847`.
 
-Trên cùng VPS (self-hosted Cursor worker):
+### Cách 2 (khuyến nghị): Cursor agent chạy trên VPS
+
+Hướng dẫn nontech: xem [`HUONG-DAN-CACH-2.md`](./HUONG-DAN-CACH-2.md).
+
+Tóm tắt: vào [cursor.com/agents](https://cursor.com/agents) → chọn **My Machines → replytz05** → nhờ AI gửi tin / bật AI. Trên VPS agent dùng:
+
+```bash
+node control-cli.js status
+node control-cli.js chats
+node control-cli.js send <chatId> xin chào
+node control-cli.js ai-on <chatId>
+```
+
+### Gọi HTTP trực tiếp (cùng VPS)
 
 ```bash
 TOKEN=... # CONTROL_API_TOKEN
 curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:3847/status
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:3847/chats
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"text":"xin chào"}' http://127.0.0.1:3847/chats/-100123/send
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"enabled":true}' http://127.0.0.1:3847/ai/-100123
 ```
 
 Endpoints: `/health`, `/status`, `/chats`, `/chats/:id/messages`, `/chats/:id/send`, `/ai/:chatId`, `/ai/provider`, `/command`.
