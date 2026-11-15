@@ -11,6 +11,11 @@ Trong từng nhóm hoặc chat riêng (admin):
 /ai off         # tắt
 /ai provider claude|grok|openai
 /ai prompt ...  # system prompt riêng
+
+# Claude Code cầm bot (từ iPhone qua Telegram — xem HUONG-DAN-CLAUDE-CODE-PILOT.md)
+/cc on          # bật: tin admin → Claude Code trên VPS
+/cc off
+/cc <yêu cầu>   # một lần
 ```
 
 Cần key trong `.env`: `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` tùy `AI_PROVIDER`.

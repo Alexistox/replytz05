@@ -20,6 +20,7 @@ module.exports = {
   // AI_PROVIDER=openai|claude|grok
   // ANTHROPIC_API_KEY= / XAI_API_KEY= / OPENAI_API_KEY=
   // CONTROL_API_TOKEN=...   (bắt buộc để bật HTTP control trên localhost:3847)
+  // CLAUDE_CODE_ENABLED=0 / CLAUDE_CODE_BIN= / CLAUDE_CODE_TIMEOUT_MS=180000
 
   // Cấu hình mặc định
   defaultSettings: {

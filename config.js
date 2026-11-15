@@ -48,6 +48,13 @@ module.exports = {
   controlApiPort: parseInt(process.env.CONTROL_API_PORT || '3847', 10),
   controlApiToken: process.env.CONTROL_API_TOKEN || '',
 
+  // Claude Code pilot (Telegram /cc → claude CLI trên VPS → control-cli)
+  // CLAUDE_CODE_ENABLED=0 để tắt. Cần: npm i -g @anthropic-ai/claude-code && claude auth login
+  claudeCodeEnabled: process.env.CLAUDE_CODE_ENABLED !== '0',
+  claudeCodeBin: process.env.CLAUDE_CODE_BIN || '',
+  claudeCodeTimeoutMs: parseInt(process.env.CLAUDE_CODE_TIMEOUT_MS || '180000', 10),
+  claudeCodeSystemPrompt: process.env.CLAUDE_CODE_SYSTEM_PROMPT || '',
+
   /** User ID Telegram luôn có quyền admin (không thể gỡ bằng /adremove). .env: PERMANENT_ADMIN_USER_IDS */
   permanentAdminUserIds: envList('PERMANENT_ADMIN_USER_IDS'),
 
@@ -57,7 +64,7 @@ module.exports = {
     calEnabled: false, // /cal on|on admin|off (admin) — toàn bot, mọi nhóm/chat
     copyPolicyEnabled: true, // /policy on|off — lọc QC/cờ bạc khi copy và setforward
     calAdminOnly: false, // khi true: chỉ admin mới gửi biểu thức được tính (cần /cal on admin)
-    groupSettings: {}, // Mỗi nhóm: { replyEnabled, aiEnabled?, aiPrompt? }
+    groupSettings: {}, // Mỗi nhóm: { replyEnabled, aiEnabled?, aiPrompt?, claudeCodePilot? }
     aiProvider: null, // override runtime: openai|claude|grok (null = dùng env)
     aiModel: null,
     pic2Settings: {}, // Pic2: { [groupId]: [ { id, enabled, targetUser, replyMessage }, ... ] }
