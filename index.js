@@ -7,6 +7,7 @@ const config = require('./config');
 const Utils = require('./utils');
 const Ai = require('./ai');
 const ClaudeCode = require('./claude-code');
+const { Wf1Runner } = require('./workflow-wf1');
 const { createControlServer } = require('./control-server');
 
 class BankTransactionUserbot {
@@ -31,6 +32,7 @@ class BankTransactionUserbot {
     this.claudeCodeBusyChats = new Set();
     /** chatId → timestamp: bỏ qua tin outgoing (echo reply của bot) sau khi /cc trả lời */
     this.claudeCodeSuppressOutUntil = new Map();
+    this.wf1 = new Wf1Runner(this);
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -574,6 +576,26 @@ class BankTransactionUserbot {
           // Cho phép reply cả tin nhắn từ chính mình nếu là tin nhắn giao dịch
           await this.handleTransactionMessage(message, messageText);
           return;
+        }
+      }
+
+      // WF1: đang chờ user chọn button tài khoản
+      if (
+        messageText.trim() &&
+        !String(messageText).startsWith('/') &&
+        this.wf1.isAwaitingUserInput(chatId) &&
+        (this.isOwnerOrAdmin(message) || message.out === true)
+      ) {
+        const chatKeyWf = String(chatId);
+        const suppressUntilWf = this.claudeCodeSuppressOutUntil.get(chatKeyWf) || 0;
+        if (!(message.out && Date.now() < suppressUntilWf)) {
+          this.processedMessages.set(messageKey, currentTime);
+          const handled = await this.wf1.handleUserAccountPick(
+            chatId,
+            messageText,
+            messageId
+          );
+          if (handled) return;
         }
       }
 
@@ -1176,6 +1198,22 @@ class BankTransactionUserbot {
         }
         await this.handleClaudeCodeCommand(args, chatId, messageId);
         break;
+
+      case '/wfbot':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf1.handleWfBotCommand(args, chatId, messageId);
+        break;
+
+      case '/wf1':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf1.handleWf1Command(args, chatId, messageId);
+        break;
     }
   }
 
@@ -1393,6 +1431,7 @@ class BankTransactionUserbot {
 3. Chuyển tiếp tự động tin nhắn (text, ảnh, video, file, albums) với emoji/text triggers
 4. AI chat theo từng nhóm/DM (Claude/Grok/OpenAI) — **mặc định TẮT**, bật bằng \`/ai on\`
 5. Claude Code pilot (iPhone Telegram → Claude Code trên VPS cầm bot) — \`/cc on\` 👑
+6. WF1 — điều khiển bot khác + sửa thời gian GD lặp: \`/wfbot\` + \`/wf1 on\` 👑
 5. Control API localhost để Cursor/Claude/Grok điều khiển gửi tin, đọc chat, bật AI
 
 **Commands - AI chat (👑 admin, theo từng chat — mặc định TẮT):**
@@ -1509,6 +1548,8 @@ Hỏi thẻ (卡, 银行卡, 要卡, 换卡, 卡号, ka): gửi "1", nhắn nhó
 **Commands - Khác:**
 /ai - AI chat theo chat (👑 /ai on|off|prompt|provider — mặc định tắt; xem mục AI phía trên)
 /cc - Claude Code pilot (👑 /cc on|off | /cc <yêu cầu> — chat từ iPhone qua Telegram)
+/wfbot - Đặt bot WF sẽ điều khiển (@bot hoặc chat id) 👑
+/wf1 - Workflow sửa thời gian giao dịch trên bot kia (/wf1 on|off) 👑
 /cal - Máy tính toàn bot (👑 admin: /cal on | /cal on admin | /cal off; xem mục /cal phía trên)
 /status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại
