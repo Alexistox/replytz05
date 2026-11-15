@@ -1,8 +1,8 @@
 /**
  * Workflow WF1 — điều khiển bot Telegram khác qua inline/reply keyboard.
  *
- * Cấu hình: /wfbot @bot|chatId
- * Chạy: /wf1 on  (trong chat điều khiển)
+ * Cấu hình: /wf1bot|/wfbot @bot  và  /wf2bot @bot khác
+ * Chạy: /wf1 on  hoặc  /wf2 on
  *
  * Luồng:
  * 1) /start → bấm button đầu → button thứ 2 → "tài khoản còn hạn"
@@ -182,10 +182,18 @@ function findButton(flat, predicate) {
   );
 }
 
-class Wf1Runner {
-  constructor(bot) {
+class WfRunner {
+  /**
+   * @param {object} bot
+   * @param {{ id?: string, label?: string }} [opts] id = wf1|wf2 — mỗi cái một bot riêng
+   */
+  constructor(bot, opts = {}) {
     this.bot = bot;
-    this.sessions = new Map(); // controlChatId → session
+    this.id = String(opts.id || 'wf1').toLowerCase();
+    this.label = String(opts.label || this.id.toUpperCase());
+    this.cmd = '/' + this.id;
+    this.cmdBot = '/' + this.id + 'bot';
+    this.sessions = new Map();
   }
 
   getSettings() {
@@ -195,15 +203,29 @@ class Wf1Runner {
     return this.bot.settings.workflow;
   }
 
+  botPeerKey() {
+    return this.id + 'BotPeer';
+  }
+
   getBotPeerConfig() {
-    return String(this.getSettings().wfBotPeer || '').trim();
+    const wf = this.getSettings();
+    const key = this.botPeerKey();
+    let v = String(wf[key] || '').trim();
+    if (!v && this.id === 'wf1') {
+      v = String(wf.wfBotPeer || '').trim();
+      if (v) {
+        wf[key] = v;
+        require('./utils').saveSettings(this.bot.settings);
+      }
+    }
+    return v;
   }
 
   setBotPeerConfig(peer) {
     const wf = this.getSettings();
-    wf.wfBotPeer = String(peer || '').trim();
-    const Utils = require('./utils');
-    Utils.saveSettings(this.bot.settings);
+    wf[this.botPeerKey()] = String(peer || '').trim();
+    if (this.id === 'wf1') wf.wfBotPeer = wf[this.botPeerKey()];
+    require('./utils').saveSettings(this.bot.settings);
   }
 
   getSession(controlChatId) {
@@ -221,7 +243,7 @@ class Wf1Runner {
 
   async resolvePeer(peerStr) {
     const raw = String(peerStr || '').trim();
-    if (!raw) throw new Error('Chưa cấu hình bot — dùng /wfbot @bot hoặc chat id');
+    if (!raw) throw new Error(`Chưa cấu hình bot — dùng ${this.cmdBot} @bot hoặc chat id`);
     let target = raw;
     if (target.startsWith('@')) target = target.slice(1);
     if (/^-?\d+$/.test(target)) {
@@ -238,7 +260,7 @@ class Wf1Runner {
       });
     } catch (e) {
       const Utils = require('./utils');
-      Utils.log(`⚠️ WF1 notify: ${e.message}`);
+      Utils.log(`⚠️ ${this.label} notify: ${e.message}`);
     }
   }
 
@@ -270,7 +292,7 @@ class Wf1Runner {
   }
 
   /**
-   * /wfbot [@user|id]
+   * /wf1bot|/wf2bot|/wfbot [@user|id]
    */
   async handleWfBotCommand(args, chatId, messageId) {
     if (!args.length) {
@@ -279,10 +301,13 @@ class Wf1Runner {
         chatId,
         messageId,
         [
-          `🤖 WF bot hiện tại: \`${cur}\``,
+          `🤖 ${this.label} bot hiện tại: \`${cur}\``,
           '',
-          'Đặt bot: `/wfbot @tenbot` hoặc `/wfbot <chatId>`',
-        ].join('\n')
+          `Đặt bot: \`${this.cmdBot} @tenbot\` hoặc \`${this.cmdBot} <chatId>\``,
+          this.id === 'wf1' ? '(alias: `/wfbot`)' : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
       );
       return;
     }
@@ -294,13 +319,12 @@ class Wf1Runner {
           ? `@${entity.username}`
           : `${entity.firstName || entity.title || ''}`.trim() || peer;
       const id = entity.id != null ? String(entity.id) : peer;
-      // Prefer username if available for stability
       const store = entity.username ? `@${entity.username}` : id;
       this.setBotPeerConfig(store);
       await this.bot.sendReply(
         chatId,
         messageId,
-        `✅ Đã đặt WF bot: ${label} (\`${store}\` / id \`${id}\`)`
+        `✅ Đã đặt ${this.label} bot: ${label} (\`${store}\` / id \`${id}\`)`
       );
     } catch (e) {
       await this.bot.sendReply(chatId, messageId, `❌ Không resolve được bot: ${e.message}`);
@@ -308,13 +332,13 @@ class Wf1Runner {
   }
 
   /**
-   * /wf1 on|off|status|help
+   * /wf1|/wf2 on|off|status|help
    */
-  async handleWf1Command(args, chatId, messageId) {
+  async handleWfCommand(args, chatId, messageId) {
     const action = String(args[0] || 'help').toLowerCase();
     if (action === 'off' || action === 'stop' || action === 'cancel') {
       this.clearSession(chatId);
-      await this.bot.sendReply(chatId, messageId, '🛑 Đã tắt / hủy WF1.');
+      await this.bot.sendReply(chatId, messageId, `🛑 Đã tắt / hủy ${this.label}.`);
       return;
     }
     if (action === 'status') {
@@ -324,7 +348,7 @@ class Wf1Runner {
         chatId,
         messageId,
         [
-          `WF1: ${s ? `🟢 ${s.phase}` : '🔴 idle'}`,
+          `${this.label}: ${s ? `🟢 ${s.phase}` : '🔴 idle'}`,
           `Bot: \`${bot}\``,
           s?.stats
             ? `Đã sửa: ${s.stats.fixed} · Bỏ qua: ${s.stats.skipped} · Lỗi: ${s.stats.errors}`
@@ -337,22 +361,25 @@ class Wf1Runner {
     }
     if (action === 'on' || action === 'start' || action === 'run') {
       if (this.getSession(chatId)?.phase === 'processing') {
-        await this.bot.sendReply(chatId, messageId, '⏳ WF1 đang chạy — /wf1 off để hủy.');
+        await this.bot.sendReply(
+          chatId,
+          messageId,
+          `⏳ ${this.label} đang chạy — ${this.cmd} off để hủy.`
+        );
         return;
       }
       if (!this.getBotPeerConfig()) {
         await this.bot.sendReply(
           chatId,
           messageId,
-          '❌ Chưa đặt bot. Dùng: `/wfbot @bot` hoặc `/wfbot <chatId>` rồi `/wf1 on`.'
+          `❌ Chưa đặt bot. Dùng: \`${this.cmdBot} @bot\` rồi \`${this.cmd} on\`.`
         );
         return;
       }
-      await this.bot.sendReply(chatId, messageId, '🚀 Bắt đầu WF1…');
-      // fire-and-forget async run
+      await this.bot.sendReply(chatId, messageId, `🚀 Bắt đầu ${this.label}…`);
       this.runUntilAccountPick(chatId, messageId).catch(async (err) => {
         this.clearSession(chatId);
-        await this.notify(chatId, `❌ WF1 lỗi: ${err.message}`, messageId);
+        await this.notify(chatId, `❌ ${this.label} lỗi: ${err.message}`, messageId);
       });
       return;
     }
@@ -361,15 +388,21 @@ class Wf1Runner {
       chatId,
       messageId,
       [
-        '**WF1** — tự động thao tác bot khác',
+        `**${this.label}** — tự động thao tác bot khác (bot riêng từng WF)`,
         '',
-        '`/wfbot @bot` — đặt bot sẽ điều khiển',
-        '`/wf1 on` — chạy: /start → button 1 → button 2 → tài khoản còn hạn → chờ bạn chọn account',
-        'Sau khi chọn account: chỉnh sửa giao dịch → chỉnh giao dịch → sửa thời gian từng GD',
-        '`/wf1 off` — hủy',
-        '`/wf1 status`',
+        `\`${this.cmdBot} @bot\` — đặt bot cho ${this.label}`,
+        `\`${this.cmd} on\` — chạy workflow sửa thời gian GD`,
+        `\`${this.cmd} off\` — hủy`,
+        `\`${this.cmd} status\``,
+        '',
+        'WF1 và WF2 dùng **hai bot khác nhau** (`/wf1bot` vs `/wf2bot`).',
       ].join('\n')
     );
+  }
+
+  /** @deprecated alias */
+  async handleWf1Command(args, chatId, messageId) {
+    return this.handleWfCommand(args, chatId, messageId);
   }
 
   async runUntilAccountPick(controlChatId, replyTo) {
@@ -424,7 +457,7 @@ class Wf1Runner {
         list,
         '',
         'Ví dụ: `1` hoặc dán đúng tên button.',
-        'Hủy: /wf1 off',
+        `Hủy: ${this.cmd} off`,
       ].join('\n'),
       replyTo
     );
@@ -470,7 +503,11 @@ class Wf1Runner {
 
     this.continueAfterAccount(controlChatId).catch(async (err) => {
       this.clearSession(controlChatId);
-      await this.notify(controlChatId, `❌ WF1 lỗi: ${err.message}`, messageId);
+      await this.notify(
+        controlChatId,
+        `❌ ${this.label} lỗi: ${err.message}`,
+        messageId
+      );
     });
     return true;
   }
@@ -554,7 +591,7 @@ class Wf1Runner {
     while (pass < maxPass) {
       pass += 1;
       if (!this.getSession(controlChatId)) {
-        await this.notify(controlChatId, '🛑 WF1 đã hủy.', replyTo);
+        await this.notify(controlChatId, `🛑 ${this.label} đã hủy.`, replyTo);
         return;
       }
 
@@ -683,7 +720,7 @@ class Wf1Runner {
     await this.notify(
       controlChatId,
       [
-        '🏁 WF1 xong — không còn giao dịch lệch thời gian (hoặc hết danh sách).',
+        `🏁 ${this.label} xong — không còn giao dịch lệch thời gian (hoặc hết danh sách).`,
         `Đã sửa: ${stats.fixed}`,
         `Bỏ qua (đã trùng): ${stats.skipped}`,
         `Lỗi: ${stats.errors}`,
@@ -725,7 +762,8 @@ class Wf1Runner {
 }
 
 module.exports = {
-  Wf1Runner,
+  WfRunner,
+  Wf1Runner: WfRunner, // alias
   extractContentTime,
   extractFieldTime,
   extractFieldTimeRaw,

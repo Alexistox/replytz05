@@ -1,18 +1,15 @@
-# WF1 — Điều khiển bot khác + sửa thời gian giao dịch
+# WF1 / WF2 — Điều khiển bot khác + sửa thời gian giao dịch
+
+Hai workflow **giống nhau**, nhưng **mỗi cái một bot riêng**.
 
 ## Cấu hình bot
 
-Trong chat với userbot (admin):
-
 ```text
-/wfbot @ten_bot
+/wf1bot @bot_A
+/wf2bot @bot_B
 ```
 
-hoặc
-
-```text
-/wfbot <chatId>
-```
+Alias WF1: `/wfbot` = `/wf1bot`
 
 ## Chạy
 
@@ -20,28 +17,22 @@ hoặc
 /wf1 on
 ```
 
-Bot sẽ:
+hoặc
 
-1. Vào bot đã cấu hình, gửi `/start`
-2. Bấm **button đầu tiên**
-3. Bấm **button thứ 2**
-4. Bấm **Tài khoản còn hạn**
-5. **Liệt kê** các button tài khoản trong chat này → bạn chọn (gõ `1` hoặc tên button)
-6. Bấm **Chỉnh sửa giao dịch** → **Chỉnh giao dịch**
-7. Lặp từng giao dịch:
-   - Đọc `Nội dung:` (lấy ngày giờ) và `Thời gian:`
-   - Hỗ trợ compact trong Nội dung: `151126-18:34:26` = **15/11/2026 18:34** (DDMMYY-HH:mm:ss, **bỏ giây** khi chỉnh)
-   - Trùng (và không còn giây) → bỏ qua
-   - Khác / còn giây → chỉnh mục thời gian (gửi `dd/mm/yyyy HH:mm`)
-   - Sau khi chỉnh: **chờ tin mới** → **Quay lại** → **Quay lại** lần nữa → về list
-   - Hết trang: bấm button **loạt giao dịch tiếp theo**
-   - Báo cáo từng bước trong chat
-8. Dừng khi không còn GD lệch / còn giây (và hết trang)
+```text
+/wf2 on
+```
 
-Hủy giữa chừng: `/wf1 off`
+## Luồng (giống nhau)
 
-## Lưu ý
+1. `/start` → button **1** → button **2** → **Tài khoản còn hạn**
+2. Liệt kê button tài khoản → bạn chọn (`1` hoặc tên)
+3. **Chỉnh Giao Dịch** (bỏ qua menu “Chỉnh sửa” nếu không có)
+4. Lặp từng GD:
+   - `Nội dung:` hỗ trợ `151126-18:34:26` → **15/11/2026 18:34**
+   - Mục Thời gian còn giây / lệch → chỉnh thành `dd/mm/yyyy HH:mm`
+   - Sau chỉnh: chờ tin mới → **Quay lại** ×2 → list
+   - Hết trang → button loạt tiếp theo
+5. Dừng khi không còn GD cần sửa
 
-- Userbot phải từng chat / Start với bot đích (không bị chặn).
-- Tên button khớp gần đúng tiếng Việt; nếu bot đích đổi nhãn, báo để chỉnh regex.
-- Phần chỉnh thời gian giả định bot có button liên quan “thời gian” / “chỉnh” rồi nhận tin nhắn text.
+Hủy: `/wf1 off` hoặc `/wf2 off`
