@@ -19,8 +19,8 @@ Bot (pm2 `replytz05` / `ilsac`) đã có Control API + lệnh `/cc`.
 
 ## Mỗi lần dùng (iPhone)
 
-1. Mở Telegram → chat với **Kei (tz05)** hoặc **ilsac (tz06)** (nên dùng Saved Messages / DM)
-2. Gửi (với tài khoản admin):
+1. Mở Telegram → nhóm (bạn là **admin Telegram** của nhóm đó) hoặc DM với userbot
+2. Gửi:
 
 ```text
 /cc on
@@ -47,6 +47,6 @@ Một lần lẻ (không bật mode):
 
 ## Lưu ý
 
-- Chỉ **admin** (`PERMANENT_ADMIN_USER_IDS` / admin list) dùng được `/cc`
+- `/cc` và `/wf*` **không** dùng quyền admin bot cục bộ (`adminUsers` / PERMANENT_ADMIN). Trong nhóm chỉ **admin/chủ Telegram** của đúng nhóm đó; trong DM thì người đang chat với userbot
 - Một lúc chỉ một yêu cầu Claude Code (tránh spam)
 - Gói Claude Code dùng qua CLI theo điều khoản Anthropic — chỉ dùng cho chính bạn, không share bot công khai

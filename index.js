@@ -1,4 +1,4 @@
-const { TelegramClient } = require('telegram');
+const { TelegramClient, Api } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const { NewMessage, Raw } = require('telegram/events');
 const readline = require('readline');
@@ -54,7 +54,7 @@ class BankTransactionUserbot {
     );
     const cc = ClaudeCode.describeSetup();
     Utils.log(
-      `🦞 Claude Code pilot: ${cc.enabled ? 'bật' : 'tắt'} — binary ${cc.binaryOk ? cc.bin : 'chưa thấy'}; /cc on trong DM với admin`
+      `🦞 Claude Code pilot: ${cc.enabled ? 'bật' : 'tắt'} — binary ${cc.binaryOk ? cc.bin : 'chưa thấy'}; /cc|/wf* theo admin Telegram của đúng nhóm (không dùng admin bot cục bộ)`
     );
   }
 
@@ -529,8 +529,8 @@ class BankTransactionUserbot {
     try {
       // WF2: list thuần /bdsd… (không cần /wf2) — chặn trước parseCommand
       if (
-        (this.isOwnerOrAdmin(message) || message.out === true) &&
-        (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText))
+        (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText)) &&
+        (await this.isWfCcAllowed(message, chatId))
       ) {
         const chatKeyWf2 = String(chatId);
         const suppressUntilWf2 = this.claudeCodeSuppressOutUntil.get(chatKeyWf2) || 0;
@@ -604,7 +604,7 @@ class BankTransactionUserbot {
       if (
         messageText.trim() &&
         !String(messageText).startsWith('/') &&
-        (this.isOwnerOrAdmin(message) || message.out === true)
+        (await this.isWfCcAllowed(message, chatId))
       ) {
         const chatKeyWf = String(chatId);
         const suppressUntilWf = this.claudeCodeSuppressOutUntil.get(chatKeyWf) || 0;
@@ -628,7 +628,7 @@ class BankTransactionUserbot {
         groupSettings.claudeCodePilot === true &&
         messageText.trim() &&
         !String(messageText).startsWith('/') &&
-        (this.isOwnerOrAdmin(message) || message.out === true)
+        (await this.isWfCcAllowed(message, chatId))
       ) {
         const chatKey = String(chatId);
         const suppressUntil = this.claudeCodeSuppressOutUntil.get(chatKey) || 0;
@@ -1211,12 +1211,7 @@ class BankTransactionUserbot {
       case '/cc':
       case '/claude':
       case '/claudecode':
-        if (!this.isOwnerOrAdmin(originalMessage)) {
-          await this.sendReply(
-            chatId,
-            messageId,
-            '❌ Chỉ admin mới có thể dùng Claude Code pilot'
-          );
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'Claude Code pilot')) {
           return;
         }
         await this.handleClaudeCodeCommand(args, chatId, messageId);
@@ -1224,48 +1219,42 @@ class BankTransactionUserbot {
 
       case '/wfbot':
       case '/wf1bot':
-        if (!this.isOwnerOrAdmin(originalMessage)) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF1')) {
           return;
         }
         await this.wf1.handleWfBotCommand(args, chatId, messageId);
         break;
 
       case '/wf2bot':
-        if (!this.isOwnerOrAdmin(originalMessage)) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF2')) {
           return;
         }
         await this.wf2.handleWfBotCommand(args, chatId, messageId);
         break;
 
       case '/wf1':
-        if (!this.isOwnerOrAdmin(originalMessage)) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF1')) {
           return;
         }
         await this.wf1.handleWfCommand(args, chatId, messageId);
         break;
 
       case '/wf2':
-        if (!this.isOwnerOrAdmin(originalMessage)) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF2')) {
           return;
         }
         await this.wf2.handleWfCommand(args, chatId, messageId, messageText);
         break;
 
       case '/wf3bot':
-        if (!this.isOwnerOrAdmin(originalMessage)) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF3')) {
           return;
         }
         await this.wf3.handleWfBotCommand(args, chatId, messageId);
         break;
 
       case '/wf3':
-        if (!this.isOwnerOrAdmin(originalMessage)) {
-          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF3')) {
           return;
         }
         await this.wf3.handleWfCommand(args, chatId, messageId);
@@ -1603,13 +1592,13 @@ Hỏi thẻ (卡, 银行卡, 要卡, 换卡, 卡号, ka): gửi "1", nhắn nhó
 
 **Commands - Khác:**
 /ai - AI chat theo chat (👑 /ai on|off|prompt|provider — mặc định tắt; xem mục AI phía trên)
-/cc - Claude Code pilot (👑 /cc on|off | /cc <yêu cầu> — chat từ iPhone qua Telegram)
-/wf1bot|/wfbot - Đặt bot cho WF1 👑
-/wf1 - WF1 sửa thời gian GD không giây (on|off|status) 👑
-/wf3bot - Đặt bot cho WF3 👑
-/wf3 - WF3 giống WF1 nhưng giữ giây (on|off|status) 👑
-/wf2bot - Đặt bot nhận lệnh /bdsd (WF2) 👑
-/wf2 - WF2 gửi lần lượt list /bdsd (off|status) 👑
+/cc - Claude Code pilot (admin Telegram nhóm này — không dùng admin bot cục bộ)
+/wf1bot|/wfbot - Đặt bot WF1 (admin nhóm)
+/wf1 - WF1 sửa TG không giây (admin nhóm)
+/wf3bot - Đặt bot WF3 (admin nhóm)
+/wf3 - WF3 giữ giây (admin nhóm)
+/wf2bot - Đặt bot /bdsd WF2 (admin nhóm)
+/wf2 - WF2 gửi list /bdsd (admin nhóm)
 /cal - Máy tính toàn bot (👑 admin: /cal on | /cal on admin | /cal off; xem mục /cal phía trên)
 /status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại
@@ -2756,6 +2745,93 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     }
 
     return false;
+  }
+
+  /**
+   * Quyền lệnh /wf* và /cc: theo đúng chat đang gõ lệnh.
+   * - Không dùng adminUsers / PERMANENT_ADMIN (quyền cục bộ bot).
+   * - Nhóm/kênh: chỉ admin hoặc chủ nhóm Telegram.
+   * - DM: người đang chat với userbot (tin outgoing/self luôn OK).
+   */
+  async isWfCcAllowed(message, chatId) {
+    if (!message) return false;
+    if (message.out === true) return true;
+
+    const uid = Utils.getMessageSenderUserId(message);
+    if (!uid) return false;
+
+    try {
+      const me = await this.getMeCached();
+      if (me && Utils.normalizeUserId(me.id) === uid) return true;
+    } catch (_e) {
+      /* ignore */
+    }
+
+    const cid = String(chatId || Utils.getMessageChatId(message) || '').trim();
+    // Private chat (user id dương) — không dùng admin bot toàn cục
+    if (cid && !cid.startsWith('-')) {
+      return true;
+    }
+    if (!cid) return false;
+
+    return this.isTelegramChatAdmin(cid, uid);
+  }
+
+  /** Admin/creator Telegram của đúng chat (không đọc adminUsers bot). */
+  async isTelegramChatAdmin(chatId, userId) {
+    const uid = Utils.normalizeUserId(userId);
+    if (!uid || !this.client) return false;
+    try {
+      const peer = await this.client.getEntity(
+        /^-?\d+$/.test(String(chatId)) ? Number(chatId) : chatId
+      );
+      const inputPeer = await this.client.getInputEntity(peer);
+      const inputUser = await this.client.getInputEntity(Number(uid));
+
+      // Supergroup / channel
+      if (peer.className === 'Channel' || peer.broadcast || peer.megagroup) {
+        const res = await this.client.invoke(
+          new Api.channels.GetParticipant({
+            channel: inputPeer,
+            participant: inputUser,
+          })
+        );
+        const p = res?.participant;
+        const cls = p?.className || p?.constructor?.name || '';
+        if (/ParticipantCreator/i.test(cls)) return true;
+        if (/ParticipantAdmin/i.test(cls)) return true;
+        return false;
+      }
+
+      // Basic group
+      const full = await this.client.invoke(
+        new Api.messages.GetFullChat({ chatId: peer.id })
+      );
+      const participants = full?.fullChat?.participants?.participants || [];
+      for (const p of participants) {
+        const pid = Utils.normalizeUserId(p.userId);
+        if (pid !== uid) continue;
+        const cls = p.className || p.constructor?.name || '';
+        if (/ChatParticipantCreator/i.test(cls)) return true;
+        if (/ChatParticipantAdmin/i.test(cls)) return true;
+        return false;
+      }
+      return false;
+    } catch (e) {
+      Utils.log(`⚠️ isTelegramChatAdmin(${chatId}, ${uid}): ${e.message}`);
+      return false;
+    }
+  }
+
+  async denyIfNotWfCcAllowed(message, chatId, messageId, what = 'lệnh này') {
+    const ok = await this.isWfCcAllowed(message, chatId);
+    if (ok) return false;
+    await this.sendReply(
+      chatId,
+      messageId,
+      `❌ Chỉ admin Telegram của nhóm này mới dùng được ${what} (không dùng quyền admin bot cục bộ).`
+    );
+    return true;
   }
 
   /**
