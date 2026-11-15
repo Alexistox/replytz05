@@ -160,6 +160,19 @@ function shouldSkipTimeEdit(contentTime, fieldTime, rawField) {
   return fieldTime === contentTime;
 }
 
+/** Key ổn định của GD (không phụ thuộc thứ tự list sau khi sửa). */
+function extractTxKey(body) {
+  const raw = String(body || '');
+  const id =
+    raw.match(/S[uử]a\s*Giao\s*D[iị]ch\s*#\s*(\d+)/i) ||
+    raw.match(/Mã\s*GD:\s*([A-Z0-9]+)/i) ||
+    raw.match(/\b(FT\d+)\b/i);
+  if (id) return `id:${id[1]}`;
+  const amt = raw.match(/S[oố]\s*ti[eề]n:\s*([^\n]+)/i);
+  const ct = extractContentTime(raw);
+  return `a:${(amt && amt[1] || '').trim()}|t:${ct || ''}`;
+}
+
 function flattenButtons(rows) {
   if (!rows) return [];
   const out = [];
@@ -755,17 +768,20 @@ class WfRunner {
   }
 
   /**
-   * Quét mọi trang list GD đến khi một vòng full (hết trang) không còn GD lệch thời gian.
-   * Sau mỗi lần sửa, list sắp xếp lại theo thời gian → clear và quét lại trang hiện tại;
-   * hết trang mà vẫn có sửa trong vòng → về trang 1, quét vòng mới.
+   * Quét mọi trang đến khi một vòng không sửa gì thêm → DỪNG.
+   * GD đã đúng / đã sửa được gắn key ổn định (Mã GD) — không mở lại trong run này.
    */
   async processTransactionLoop(controlChatId, listMsg) {
     const session = this.getSession(controlChatId);
     if (!session) return;
     const { peer, replyTo } = session;
     let msg = listMsg;
-    const maxSweeps = 25;
+    const maxSweeps = 8;
     const maxPagesPerSweep = 40;
+    /** @type {Set<string>} GD đã xử lý xong (đúng hoặc đã sửa 1 lần) — không đụng lại */
+    const doneKeys = new Set();
+    /** @type {Set<string>} label button đã biết OK trên list */
+    const doneLabels = new Set();
 
     for (let sweep = 1; sweep <= maxSweeps; sweep++) {
       if (!this.getSession(controlChatId)) {
@@ -774,9 +790,10 @@ class WfRunner {
       }
 
       let fixedThisSweep = 0;
+      let openedThisSweep = 0;
       await this.notify(
         controlChatId,
-        `🔁 Vòng quét ${sweep}: duyệt mọi trang đến khi hết chỗ sai…`,
+        `🔁 Vòng ${sweep}: chỉ mở GD chưa xử lý — hết lệch thì dừng.`,
         replyTo
       );
       msg = await this.ensureTxList(msg, peer);
@@ -787,33 +804,26 @@ class WfRunner {
         if (!this.getSession(controlChatId)) return;
         msg = await this.ensureTxList(msg, peer);
 
-        // Quét trang hiện tại đến khi không còn GD cần sửa trên trang này
-        // (sau mỗi lần sửa list đổi chỗ → quét lại từ đầu trang)
-        const seenOk = new Set();
         let pageGuard = 0;
         while (pageGuard < 40) {
           pageGuard += 1;
           if (!this.getSession(controlChatId)) return;
 
           msg = (await this.getLatestMessage(peer)) || msg;
-          // Nếu latest không còn list, tìm lại message Edit LSGD
           let flat = await this.getButtons(msg);
           if (!this.isTxListScreen(msg, flat)) {
             msg = await this.ensureTxList(msg, peer);
             flat = await this.getButtons(msg);
           }
           const txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
-          const candidate = txButtons.find((b) => !seenOk.has(b.text));
+          const candidate = txButtons.find((b) => !doneLabels.has(b.text));
 
           if (!candidate) {
-            const Utils = require('./utils');
-            Utils.log(
-              `${this.label} V${sweep} T${page}: hết candidate. buttons=${flat.map((b) => b.text).join(' || ') || '(không)'}`
-            );
             break;
           }
 
           const label = candidate.text;
+          openedThisSweep += 1;
           await this.notify(
             controlChatId,
             `🔎 [V${sweep}·T${page}] Mở: ${label.slice(0, 100)}`,
@@ -821,12 +831,24 @@ class WfRunner {
           );
           let detail = await this.clickButton(msg, label, peer);
           const body = String(detail?.message || detail?.text || '');
+          const txKey = extractTxKey(body);
           const contentTime = extractContentTime(body);
           const fieldTime = extractFieldTime(body);
           const rawField = extractFieldTimeRaw(body);
 
+          // Đã xử lý GD này trước đó → bỏ qua, nhớ label mới (list đổi chỗ)
+          if (doneKeys.has(txKey)) {
+            doneLabels.add(label);
+            msg = await this.returnToTransactionList(detail, peer, {
+              afterEdit: false,
+            });
+            continue;
+          }
+
           if (!contentTime) {
             session.stats.errors += 1;
+            doneKeys.add(txKey);
+            doneLabels.add(label);
             await this.notify(
               controlChatId,
               `⚠️ Không parse được thời gian Nội dung — bỏ qua.\n${body.slice(0, 350)}`,
@@ -835,21 +857,21 @@ class WfRunner {
             msg = await this.returnToTransactionList(detail, peer, {
               afterEdit: false,
             });
-            seenOk.add(label);
             continue;
           }
 
           if (shouldSkipTimeEdit(contentTime, fieldTime, rawField)) {
             session.stats.skipped += 1;
+            doneKeys.add(txKey);
+            doneLabels.add(label);
             await this.notify(
               controlChatId,
-              `⏭️ Đã đúng (${contentTime}, không giây) — bỏ qua.`,
+              `⏭️ Đã đúng (${contentTime}) — bỏ qua.`,
               replyTo
             );
             msg = await this.returnToTransactionList(detail, peer, {
               afterEdit: false,
             });
-            seenOk.add(label);
             continue;
           }
 
@@ -867,18 +889,22 @@ class WfRunner {
             detail = await this.editTimeOnDetail(detail, peer, contentTime);
             session.stats.fixed += 1;
             fixedThisSweep += 1;
+            // Đánh dấu đã sửa — không mở lại GD này trong run (tránh sửa vòng)
+            doneKeys.add(txKey);
+            // Label list đổi sau sắp xếp — chỉ xóa labels, giữ doneKeys
+            doneLabels.clear();
             await this.notify(
               controlChatId,
-              `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n↩️ Quay lại → chờ bảng mới → Quay lại…\n(List đổi theo thời gian — quét lại trang/các trang)`,
+              `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed})\n↩️ Quay lại → chờ bảng → Quay lại…`,
               replyTo
             );
             msg = await this.returnToTransactionList(detail, peer, {
               afterEdit: true,
             });
-            // List đã sắp xếp lại — xóa seenOk, quét lại trang từ đầu
-            seenOk.clear();
           } catch (e) {
             session.stats.errors += 1;
+            doneKeys.add(txKey);
+            doneLabels.add(label);
             await this.notify(
               controlChatId,
               `⚠️ Không chỉnh được: ${e.message}`,
@@ -887,16 +913,13 @@ class WfRunner {
             msg = await this.returnToTransactionList(detail, peer, {
               afterEdit: false,
             });
-            seenOk.add(label);
           }
         }
 
-        // Hết GD cần sửa trên trang → Sang trang sau nếu có
         msg = await this.ensureTxList(msg, peer);
         let flat = await this.getButtons(msg);
         let nextBtn = findButton(flat, BTN.nextPage);
         if (!nextBtn) {
-          // Thử tìm đúng message list (Trang 1/2) nếu latest bị lệch
           const listMsg = await this.findTxListMessage(peer);
           if (listMsg) {
             msg = listMsg;
@@ -914,29 +937,29 @@ class WfRunner {
           await sleep(1000);
           continue;
         }
-
-        const Utils = require('./utils');
-        Utils.log(
-          `${this.label} V${sweep}: hết trang (không nút Sau). buttons=${flat.map((b) => b.text).join(' || ') || '(không)'} body=${String(msg?.message || '').slice(0, 80)}`
-        );
-        // Hết trang trong vòng này
         break;
       }
 
+      // DỪNG khi vòng này không sửa gì (mọi GD mở ra đều đã đúng / đã xử lý)
       if (fixedThisSweep === 0) {
         await this.notify(
           controlChatId,
-          `✨ Vòng ${sweep}: không còn GD lệch trên mọi trang.`,
+          openedThisSweep === 0
+            ? `✨ Không còn GD chưa xử lý — dừng.`
+            : `✨ Vòng ${sweep}: không còn GD lệch — dừng.`,
           replyTo
         );
         break;
       }
 
+      if (sweep >= maxSweeps) break;
+
       await this.notify(
         controlChatId,
-        `🔄 Vòng ${sweep} đã sửa ${fixedThisSweep} GD (list đổi chỗ) — về trang 1 quét lại toàn bộ…`,
+        `🔄 Vòng ${sweep} sửa ${fixedThisSweep} GD — về trang 1 quét GD còn lại (đã sửa thì bỏ qua)…`,
         replyTo
       );
+      doneLabels.clear(); // label đổi sau reorder; doneKeys giữ nguyên
       msg = await this.goToFirstTxPage(msg, peer);
     }
 
@@ -946,9 +969,9 @@ class WfRunner {
     await this.notify(
       controlChatId,
       [
-        `🏁 ${this.label} xong — đã quét hết trang đến khi không còn chỗ sai.`,
+        `🏁 ${this.label} đã dừng.`,
         `Đã sửa: ${stats.fixed}`,
-        `Bỏ qua (đã trùng): ${stats.skipped}`,
+        `Bỏ qua (đã đúng): ${stats.skipped}`,
         `Lỗi: ${stats.errors}`,
       ].join('\n'),
       replyTo
