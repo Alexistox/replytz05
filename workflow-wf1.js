@@ -541,11 +541,16 @@ class WfRunner {
     if (BTN.editTxMenu.test(t) || BTN.editTx.test(t)) return false;
     if (BTN.editTime.test(t)) return false;
     if (BTN.accountValid.test(t)) return false;
-    // Menu / field trên màn chi tiết — không phải dòng giao dịch trong list
+    // Field / menu trên màn chi tiết — KHÔNG phải dòng GD trong list
+    // (trước đây nhầm mở "Sửa Số Tiền", "Tên Người Chuyển"…)
     if (/t[aạ]o\s*giao\s*d[iị]ch/i.test(t)) return false;
     if (/lo[aạ]i\s*giao\s*d[iị]ch/i.test(t)) return false;
     if (/s[uử]a\s*s[oố]\s*ti[eề]n|s[oố]\s*ti[eề]n/i.test(t)) return false;
     if (/c[oộ]ng\s*ti[eề]n|tr[uừ]\s*ti[eề]n/i.test(t)) return false;
+    if (/ng[uư][oờ]i\s*chuy[eể]n|t[eê]n\s*ng[uư][oờ]i/i.test(t)) return false;
+    if (/\bstk\b|s[oố]\s*t[aà]i\s*kho[aả]n|m[aã]\s*giao\s*d[iị]ch/i.test(t)) {
+      return false;
+    }
     if (/n[oộ]i\s*dung|ghi\s*ch[uú]/i.test(t) && !DT_COMPACT_RE.test(t)) return false;
     if (/th[oờ]i\s*gian/i.test(t) && !DT_COMPACT_RE.test(t) && !DT_SLASH_RE.test(t)) {
       return false;
@@ -553,10 +558,21 @@ class WfRunner {
     if (/^✅|^❌|^✔️|th[aà]nh\s*c[oô]ng|đ[aã]\s*l[uưu]|x[aá]c\s*nh[aậ]n/i.test(t)) {
       return false;
     }
-    // Có ngày/giờ trên label → chắc là dòng GD
+    // List GD thực tế: "+6,500,000đ | TÊN" hoặc có ngày/giờ
+    if (/[+-]?\d[\d.,]*\s*đ/i.test(t)) return true;
     if (DT_COMPACT_RE.test(t) || DT_SLASH_RE.test(t)) return true;
-    // Còn lại: coi là GD nếu đã lọc hết menu/field ở trên
-    return true;
+    if (/\|\s*\S+/.test(t) && /\d/.test(t)) return true;
+    return false;
+  }
+
+  /** Tìm message gần nhất còn button Quay lại (khi đang kẹt màn nhập text). */
+  async findMessageWithBack(peer, limit = 12) {
+    const msgs = await this.bot.client.getMessages(peer, { limit });
+    for (const m of msgs || []) {
+      const flat = await this.getButtons(m);
+      if (findButton(flat, BTN.back)) return m;
+    }
+    return null;
   }
 
   /**
@@ -565,12 +581,12 @@ class WfRunner {
    */
   async returnToTransactionList(msg, peer, { afterEdit = false } = {}) {
     if (afterEdit) {
-      // Không chờ tin mới — bấm Quay lại ngay trên message hiện có, rồi Quay lại tiếp
+      // Không chờ tin mới — Quay lại ngay ×2. Nếu kẹt màn "Nhập giá trị…" (không button) thì tìm msg có Quay lại.
       for (let i = 0; i < 2; i++) {
         let flat = await this.getButtons(msg);
         if (!findButton(flat, BTN.back)) {
-          // Thử lấy tin mới nhất nếu keyboard không còn trên msg cũ
-          msg = (await this.getLatestMessage(peer)) || msg;
+          const withBack = await this.findMessageWithBack(peer);
+          if (withBack) msg = withBack;
           flat = await this.getButtons(msg);
         }
         if (!findButton(flat, BTN.back)) {
@@ -763,27 +779,21 @@ class WfRunner {
   async editTimeOnDetail(detailMsg, peer, newTime) {
     let msg = detailMsg;
     const flat = await this.getButtons(msg);
-    const timeBtn = findButton(flat, BTN.editTime);
-    if (timeBtn) {
-      msg = await this.clickButton(msg, BTN.editTime, peer);
-    } else {
-      // Một số bot yêu cầu bấm "chỉnh" rồi chọn field — thử button chứa "sửa" / "edit"
-      const editBtn = findButton(flat, /ch[iỉ]nh|s[uử]a|edit/i);
-      if (!editBtn) {
-        throw new Error(
-          `Không thấy button chỉnh thời gian. Buttons: ${flat.map((b) => b.text).join(' | ')}`
-        );
-      }
-      msg = await this.clickButton(msg, editBtn.text, peer);
-      const flat2 = await this.getButtons(msg);
-      const timeBtn2 = findButton(flat2, BTN.editTime) || findButton(flat2, /th[oờ]i\s*gian/i);
-      if (timeBtn2) {
-        msg = await this.clickButton(msg, timeBtn2.text, peer);
-      }
+    // Chỉ bấm button Thời gian — không fallback sang "Sửa Số Tiền" / field khác
+    const timeBtn =
+      findButton(flat, /th[oờ]i\s*gian/i) || findButton(flat, BTN.editTime);
+    if (!timeBtn) {
+      throw new Error(
+        `Không thấy button Thời gian. Buttons: ${flat.map((b) => b.text).join(' | ')}`
+      );
     }
+    msg = await this.clickButton(msg, timeBtn.text, peer);
     // Gửi giá trị thời gian đúng format
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(2000);
+    await sleep(1200);
+    // Ưu tiên message còn keyboard (chi tiết GD), không giữ màn "Nhập giá trị…"
+    const withBack = await this.findMessageWithBack(peer);
+    if (withBack) return withBack;
     return this.getLatestMessage(peer);
   }
 }
