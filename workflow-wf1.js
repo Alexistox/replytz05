@@ -579,97 +579,157 @@ class WfRunner {
     return null;
   }
 
+  isDetailScreen(flat) {
+    return !!(
+      findButton(flat, /s[uử]a\s*th[oờ]i\s*gian|th[oờ]i\s*gian/i) ||
+      findButton(flat, /s[uử]a\s*s[oố]\s*ti[eề]n/i) ||
+      findButton(flat, /s[uử]a\s*ng[uư][oờ]i\s*chuy[eể]n/i)
+    );
+  }
+
+  isTxListScreen(msg, flat) {
+    const body = String(msg?.message || msg?.text || '');
+    if (/Edit\s*LSGD|Ch[oọ]n\s*giao\s*d[iị]ch\s*đ[eể]\s*s[uử]a|Trang\s*\d+\s*\/\s*\d+/i.test(body)) {
+      return true;
+    }
+    const tx = (flat || []).filter((b) => this.isLikelyTransactionButton(b.text));
+    if (tx.length > 0) return true;
+    // Có nút Sau/Trước của list, không phải màn chi tiết
+    if (
+      (findButton(flat, BTN.nextPage) || findButton(flat, BTN.prevPage)) &&
+      !this.isDetailScreen(flat)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /** Đảm bảo đang ở màn list GD (Edit LSGD). Nếu lệch ra menu cha thì bấm lại Chỉnh Giao Dịch. */
+  async ensureTxList(msg, peer) {
+    const Utils = require('./utils');
+    for (let i = 0; i < 5; i++) {
+      msg = (await this.getLatestMessage(peer)) || msg;
+      let flat = await this.getButtons(msg);
+      if (this.isTxListScreen(msg, flat)) {
+        // Ưu tiên đúng message list nếu latest là tin khác
+        if (!this.isTxListScreen(msg, flat) || !(flat || []).length) {
+          const found = await this.findTxListMessage(peer);
+          if (found) return found;
+        }
+        return msg;
+      }
+      // Còn kẹt màn chi tiết → Quay lại
+      if (this.isDetailScreen(flat)) {
+        const back = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+        if (back) {
+          Utils.log(`${this.label} ensureTxList: còn chi tiết → Quay lại`);
+          msg = await this.clickButton(msg, back.text, peer);
+          await sleep(1000);
+          continue;
+        }
+      }
+      // Menu cha có Chỉnh Giao Dịch
+      if (findButton(flat, BTN.editTxMenu)) {
+        Utils.log(`${this.label} ensureTxList: vào Chỉnh sửa giao dịch`);
+        msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+        await sleep(1000);
+        flat = await this.getButtons(msg);
+      }
+      if (findButton(flat, BTN.editTx)) {
+        Utils.log(`${this.label} ensureTxList: vào Chỉnh Giao Dịch`);
+        msg = await this.clickButton(msg, BTN.editTx, peer);
+        await sleep(1200);
+        continue;
+      }
+      const found = await this.findTxListMessage(peer);
+      if (found) return found;
+      await sleep(800);
+    }
+    return (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer)) || msg;
+  }
+
+  async findTxListMessage(peer, limit = 15) {
+    const msgs = await this.bot.client.getMessages(peer, { limit });
+    for (const m of msgs || []) {
+      const flat = await this.getButtons(m);
+      if (this.isTxListScreen(m, flat)) return m;
+    }
+    return null;
+  }
+
   /**
-   * Sau chỉnh thời gian:
-   * 1) Ấn Quay lại trên màn hiện tại
-   * 2) Chờ bot hiện bảng/tin mới
-   * 3) Ấn Quay lại trên bảng mới đó
-   * (không phải bấm Quay lại ×2 liên tục trên cùng một tin)
+   * Sau chỉnh thời gian: Quay lại (chờ bảng mới) lặp đến khi về list GD.
+   * Không bấm Quay lại khi đã ở Edit LSGD — tránh thoát ra menu cha.
    */
   async returnToTransactionList(msg, peer, { afterEdit = false } = {}) {
     if (afterEdit) {
       const Utils = require('./utils');
-      const beforeId = msg?.id || 0;
-
-      // Bước 1: Quay lại lần 1 trên màn hiện tại
-      let flat = await this.getButtons(msg);
-      let backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
-      if (!backBtn) {
-        const withBack = await this.findMessageWithBack(peer);
-        if (withBack) {
-          msg = withBack;
-          flat = await this.getButtons(msg);
-          backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+      for (let step = 1; step <= 3; step++) {
+        msg = (await this.getLatestMessage(peer)) || msg;
+        let flat = await this.getButtons(msg);
+        if (!flat.length) {
+          const withBtns = await this.findMessageWithBack(peer);
+          if (withBtns) {
+            msg = withBtns;
+            flat = await this.getButtons(msg);
+          }
         }
-      }
-      if (!backBtn) {
-        Utils.log(
-          `⚠️ ${this.label} afterEdit: không thấy Quay lại lần 1. Buttons: ${flat.map((b) => b.text).join(' | ') || '(không có)'}`
-        );
-        return (await this.getLatestMessage(peer)) || msg;
-      }
-      Utils.log(`${this.label} afterEdit Quay lại #1: ${backBtn.text}`);
-      await sleep(300);
-      msg = await this.clickButton(msg, backBtn.text, peer);
 
-      // Bước 2: chờ bot hiện bảng mới (tin/msg mới hoặc keyboard đổi)
-      let nextBoard = null;
-      for (let t = 0; t < 12; t++) {
-        await sleep(700);
-        const latest = await this.getLatestMessage(peer);
-        const flatL = await this.getButtons(latest);
-        const hasBack = !!(findButton(flatL, BTN.back) || findButton(flatL, BTN.backLoose));
-        const isNew = latest && latest.id && latest.id !== beforeId && latest.id !== msg?.id;
-        // Bảng mới: tin mới hơn sau click, hoặc cùng msg nhưng đã đổi sang list/menu có Quay lại/GD
-        if (hasBack && (isNew || t >= 2)) {
-          nextBoard = latest;
+        if (this.isTxListScreen(msg, flat)) {
+          Utils.log(`${this.label} afterEdit: đã về list GD (sau bước ${step - 1 || 'check'})`);
+          return msg;
+        }
+
+        if (!this.isDetailScreen(flat) && !findButton(flat, BTN.back)) {
+          // Không phải chi tiết — thử tìm list trong lịch sử
+          const found = await this.findTxListMessage(peer);
+          if (found) return found;
+        }
+
+        const backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+        if (!backBtn) {
+          Utils.log(
+            `⚠️ ${this.label} afterEdit: không thấy Quay lại (bước ${step}). Buttons: ${flat.map((b) => b.text).join(' | ') || '(không có)'}`
+          );
           break;
         }
-        if (flatL.filter((b) => this.isLikelyTransactionButton(b.text)).length > 0) {
-          // Đã về list GD — không cần Quay lại lần 2
-          return latest || msg;
-        }
-      }
-      if (!nextBoard) {
-        nextBoard = (await this.getLatestMessage(peer)) || msg;
-      }
 
-      // Bước 3: Quay lại lần 2 trên bảng mới
-      flat = await this.getButtons(nextBoard);
-      backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
-      if (!backBtn) {
-        const withBack = await this.findMessageWithBack(peer);
-        if (withBack) {
-          nextBoard = withBack;
-          flat = await this.getButtons(nextBoard);
-          backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+        // Chỉ Quay lại khi còn màn chi tiết (hoặc chưa phải list)
+        if (this.isTxListScreen(msg, flat)) break;
+
+        Utils.log(`${this.label} afterEdit Quay lại #${step}: ${backBtn.text}`);
+        const beforeId = msg?.id || 0;
+        await sleep(300);
+        msg = await this.clickButton(msg, backBtn.text, peer);
+
+        // Chờ bảng/tin mới trước lần Quay lại tiếp (nếu cần)
+        for (let t = 0; t < 10; t++) {
+          await sleep(600);
+          const latest = await this.getLatestMessage(peer);
+          const flatL = await this.getButtons(latest);
+          if (this.isTxListScreen(latest, flatL)) {
+            Utils.log(`${this.label} afterEdit: bảng mới là list GD — dừng Quay lại`);
+            return latest;
+          }
+          if (latest && latest.id !== beforeId && flatL.length) {
+            msg = latest;
+            break;
+          }
+          if (t >= 2 && flatL.length) {
+            msg = latest || msg;
+            break;
+          }
         }
       }
-      if (!backBtn) {
-        Utils.log(
-          `⚠️ ${this.label} afterEdit: bảng mới không có Quay lại. Buttons: ${flat.map((b) => b.text).join(' | ') || '(không có)'}`
-        );
-        return nextBoard;
-      }
-      // Nếu bảng mới đã là list GD thì thôi
-      if (flat.filter((b) => this.isLikelyTransactionButton(b.text)).length > 0) {
-        return nextBoard;
-      }
-      Utils.log(`${this.label} afterEdit Quay lại #2 trên bảng mới: ${backBtn.text}`);
-      await sleep(300);
-      msg = await this.clickButton(nextBoard, backBtn.text, peer);
-      await sleep(600);
-      return (await this.getLatestMessage(peer)) || msg;
+      return (await this.ensureTxList(msg, peer)) || msg;
     }
 
     for (let i = 0; i < 2; i++) {
       const flat = await this.getButtons(msg);
+      if (this.isTxListScreen(msg, flat)) break;
       const txLike = flat.filter((b) => this.isLikelyTransactionButton(b.text));
       const hasNext = !!findButton(flat, BTN.nextPage);
-      // Đã về list (có GD có ngày/giờ hoặc nút trang sau)
-      if (txLike.length > 0 || hasNext) {
-        break;
-      }
+      if (txLike.length > 0 || hasNext) break;
       if (!findButton(flat, BTN.back)) {
         await sleep(800);
         msg = (await this.getLatestMessage(peer)) || msg;
@@ -679,7 +739,7 @@ class WfRunner {
       msg = await this.clickButton(msg, BTN.back, peer);
     }
     await sleep(800);
-    return (await this.getLatestMessage(peer)) || msg;
+    return (await this.ensureTxList(msg, peer)) || msg;
   }
 
   /** Về trang 1 của list GD (bấm Trước đến hết). */
@@ -719,10 +779,13 @@ class WfRunner {
         `🔁 Vòng quét ${sweep}: duyệt mọi trang đến khi hết chỗ sai…`,
         replyTo
       );
+      msg = await this.ensureTxList(msg, peer);
       msg = await this.goToFirstTxPage(msg, peer);
+      msg = await this.ensureTxList(msg, peer);
 
       for (let page = 1; page <= maxPagesPerSweep; page++) {
         if (!this.getSession(controlChatId)) return;
+        msg = await this.ensureTxList(msg, peer);
 
         // Quét trang hiện tại đến khi không còn GD cần sửa trên trang này
         // (sau mỗi lần sửa list đổi chỗ → quét lại từ đầu trang)
@@ -732,12 +795,21 @@ class WfRunner {
           pageGuard += 1;
           if (!this.getSession(controlChatId)) return;
 
+          msg = (await this.getLatestMessage(peer)) || msg;
+          // Nếu latest không còn list, tìm lại message Edit LSGD
           let flat = await this.getButtons(msg);
+          if (!this.isTxListScreen(msg, flat)) {
+            msg = await this.ensureTxList(msg, peer);
+            flat = await this.getButtons(msg);
+          }
           const txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
           const candidate = txButtons.find((b) => !seenOk.has(b.text));
 
           if (!candidate) {
-            // Không còn GD chưa kiểm tra trên trang này
+            const Utils = require('./utils');
+            Utils.log(
+              `${this.label} V${sweep} T${page}: hết candidate. buttons=${flat.map((b) => b.text).join(' || ') || '(không)'}`
+            );
             break;
           }
 
@@ -820,8 +892,18 @@ class WfRunner {
         }
 
         // Hết GD cần sửa trên trang → Sang trang sau nếu có
-        const flat = await this.getButtons(msg);
-        const nextBtn = findButton(flat, BTN.nextPage);
+        msg = await this.ensureTxList(msg, peer);
+        let flat = await this.getButtons(msg);
+        let nextBtn = findButton(flat, BTN.nextPage);
+        if (!nextBtn) {
+          // Thử tìm đúng message list (Trang 1/2) nếu latest bị lệch
+          const listMsg = await this.findTxListMessage(peer);
+          if (listMsg) {
+            msg = listMsg;
+            flat = await this.getButtons(msg);
+            nextBtn = findButton(flat, BTN.nextPage);
+          }
+        }
         if (nextBtn) {
           await this.notify(
             controlChatId,
@@ -829,9 +911,14 @@ class WfRunner {
             replyTo
           );
           msg = await this.clickButton(msg, nextBtn.text, peer);
+          await sleep(1000);
           continue;
         }
 
+        const Utils = require('./utils');
+        Utils.log(
+          `${this.label} V${sweep}: hết trang (không nút Sau). buttons=${flat.map((b) => b.text).join(' || ') || '(không)'} body=${String(msg?.message || '').slice(0, 80)}`
+        );
         // Hết trang trong vòng này
         break;
       }
