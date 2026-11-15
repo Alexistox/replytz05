@@ -23,7 +23,9 @@ const BTN = {
   editTxMenu: /ch[iỉ]nh\s*s[uử]a\s*giao\s*d[iị]ch/i,
   editTx: /ch[iỉ]nh\s*giao\s*d[iị]ch/i,
   editTime: /th[oờ]i\s*gian|ch[iỉ]nh.*gi[oờ]|s[uử]a.*th[oờ]i/i,
-  back: /quay\s*l[aạ]i|back|tr[oờ]|h[uủ]y|cancel|«|‹|⬅️/i,
+  // Chỉ nhận diện nút quay lại rõ ràng (tránh khớp nhầm field khác)
+  back: /quay\s*l[aạ]i|^back$|«|‹|⬅️/i,
+  backLoose: /quay\s*l[aạ]i|back|h[uủ]y|cancel|«|‹|⬅️/i,
   // Button sang loạt giao dịch tiếp theo
   nextPage:
     /ti[eế]p(\s*theo)?|next|sau|trang\s*sau|»|›|➡️|xem\s*th[eê]m|giao\s*d[iị]ch\s*ti[eế]p/i,
@@ -576,29 +578,84 @@ class WfRunner {
   }
 
   /**
-   * Sau chỉnh thời gian: ấn Quay lại → Quay lại ngay (không chờ tin mới).
-   * Sau bỏ qua/mở nhầm: Quay lại tối đa 2 lần cho đến khi thấy list hoặc next.
+   * Sau chỉnh thời gian:
+   * 1) Ấn Quay lại trên màn hiện tại
+   * 2) Chờ bot hiện bảng/tin mới
+   * 3) Ấn Quay lại trên bảng mới đó
+   * (không phải bấm Quay lại ×2 liên tục trên cùng một tin)
    */
   async returnToTransactionList(msg, peer, { afterEdit = false } = {}) {
     if (afterEdit) {
-      // Không chờ tin mới — Quay lại ngay ×2. Nếu kẹt màn "Nhập giá trị…" (không button) thì tìm msg có Quay lại.
-      for (let i = 0; i < 2; i++) {
-        let flat = await this.getButtons(msg);
-        if (!findButton(flat, BTN.back)) {
-          const withBack = await this.findMessageWithBack(peer);
-          if (withBack) msg = withBack;
+      const Utils = require('./utils');
+      const beforeId = msg?.id || 0;
+
+      // Bước 1: Quay lại lần 1 trên màn hiện tại
+      let flat = await this.getButtons(msg);
+      let backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+      if (!backBtn) {
+        const withBack = await this.findMessageWithBack(peer);
+        if (withBack) {
+          msg = withBack;
           flat = await this.getButtons(msg);
+          backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
         }
-        if (!findButton(flat, BTN.back)) {
-          const Utils = require('./utils');
-          Utils.log(
-            `⚠️ ${this.label} afterEdit: không thấy Quay lại (lần ${i + 1}). Buttons: ${flat.map((b) => b.text).join(' | ') || '(không có)'}`
-          );
+      }
+      if (!backBtn) {
+        Utils.log(
+          `⚠️ ${this.label} afterEdit: không thấy Quay lại lần 1. Buttons: ${flat.map((b) => b.text).join(' | ') || '(không có)'}`
+        );
+        return (await this.getLatestMessage(peer)) || msg;
+      }
+      Utils.log(`${this.label} afterEdit Quay lại #1: ${backBtn.text}`);
+      await sleep(300);
+      msg = await this.clickButton(msg, backBtn.text, peer);
+
+      // Bước 2: chờ bot hiện bảng mới (tin/msg mới hoặc keyboard đổi)
+      let nextBoard = null;
+      for (let t = 0; t < 12; t++) {
+        await sleep(700);
+        const latest = await this.getLatestMessage(peer);
+        const flatL = await this.getButtons(latest);
+        const hasBack = !!(findButton(flatL, BTN.back) || findButton(flatL, BTN.backLoose));
+        const isNew = latest && latest.id && latest.id !== beforeId && latest.id !== msg?.id;
+        // Bảng mới: tin mới hơn sau click, hoặc cùng msg nhưng đã đổi sang list/menu có Quay lại/GD
+        if (hasBack && (isNew || t >= 2)) {
+          nextBoard = latest;
           break;
         }
-        await sleep(400);
-        msg = await this.clickButton(msg, BTN.back, peer);
+        if (flatL.filter((b) => this.isLikelyTransactionButton(b.text)).length > 0) {
+          // Đã về list GD — không cần Quay lại lần 2
+          return latest || msg;
+        }
       }
+      if (!nextBoard) {
+        nextBoard = (await this.getLatestMessage(peer)) || msg;
+      }
+
+      // Bước 3: Quay lại lần 2 trên bảng mới
+      flat = await this.getButtons(nextBoard);
+      backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+      if (!backBtn) {
+        const withBack = await this.findMessageWithBack(peer);
+        if (withBack) {
+          nextBoard = withBack;
+          flat = await this.getButtons(nextBoard);
+          backBtn = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+        }
+      }
+      if (!backBtn) {
+        Utils.log(
+          `⚠️ ${this.label} afterEdit: bảng mới không có Quay lại. Buttons: ${flat.map((b) => b.text).join(' | ') || '(không có)'}`
+        );
+        return nextBoard;
+      }
+      // Nếu bảng mới đã là list GD thì thôi
+      if (flat.filter((b) => this.isLikelyTransactionButton(b.text)).length > 0) {
+        return nextBoard;
+      }
+      Utils.log(`${this.label} afterEdit Quay lại #2 trên bảng mới: ${backBtn.text}`);
+      await sleep(300);
+      msg = await this.clickButton(nextBoard, backBtn.text, peer);
       await sleep(600);
       return (await this.getLatestMessage(peer)) || msg;
     }
@@ -722,7 +779,7 @@ class WfRunner {
           fixedThisPass += 1;
           await this.notify(
             controlChatId,
-            `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n↩️ Quay lại ×2…`,
+            `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n↩️ Quay lại → chờ bảng mới → Quay lại…`,
             replyTo
           );
           msg = await this.returnToTransactionList(detail, peer, {
@@ -779,19 +836,46 @@ class WfRunner {
   async editTimeOnDetail(detailMsg, peer, newTime) {
     let msg = detailMsg;
     const flat = await this.getButtons(msg);
-    // Chỉ bấm button Thời gian — không fallback sang "Sửa Số Tiền" / field khác
+    const labels = flat.map((b) => b.text);
+    const Utils = require('./utils');
+    Utils.log(`${this.label} detail buttons: ${labels.join(' || ') || '(không có)'}`);
+
+    // Chỉ bấm button đúng "Thời gian" (ưu tiên khớp chính xác / bắt đầu bằng)
     const timeBtn =
-      findButton(flat, /th[oờ]i\s*gian/i) || findButton(flat, BTN.editTime);
+      flat.find((b) => /^⏰?\s*th[oờ]i\s*gian\b/i.test(b.text)) ||
+      flat.find((b) => /th[oờ]i\s*gian/i.test(b.text) && !/ng[uư][oờ]i|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(b.text)) ||
+      null;
     if (!timeBtn) {
       throw new Error(
-        `Không thấy button Thời gian. Buttons: ${flat.map((b) => b.text).join(' | ')}`
+        `Không thấy button Thời gian. Buttons: ${labels.join(' | ')}`
       );
     }
+    Utils.log(`${this.label} click Thời gian: ${timeBtn.text}`);
     msg = await this.clickButton(msg, timeBtn.text, peer);
-    // Gửi giá trị thời gian đúng format
+
+    const prompt = String(msg?.message || msg?.text || '');
+    if (/t[eê]n\s*ng[uư][oờ]i|ng[uư][oờ]i\s*chuy[eể]n|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(prompt) && !/th[oờ]i\s*gian/i.test(prompt)) {
+      throw new Error(
+        `Nhầm field (bot hỏi: ${prompt.slice(0, 80)}) — abort trước khi gửi giá trị.`
+      );
+    }
+
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(1200);
-    // Ưu tiên message còn keyboard (chi tiết GD), không giữ màn "Nhập giá trị…"
+    await sleep(1500);
+
+    // Lấy tin mới nhất có Quay lại (màn chi tiết), bỏ qua tin "Nhập giá trị…" không keyboard
+    for (let i = 0; i < 5; i++) {
+      const latest = await this.getLatestMessage(peer);
+      const body = String(latest?.message || latest?.text || '');
+      const flatLatest = await this.getButtons(latest);
+      if (findButton(flatLatest, BTN.back)) return latest;
+      if (/nh[aậ]p\s*gi[aá]\s*tr[iị]/i.test(body) && !findButton(flatLatest, BTN.back)) {
+        // Vẫn đang ở prompt — tìm msg chi tiết gần nhất có Quay lại
+        const withBack = await this.findMessageWithBack(peer);
+        if (withBack) return withBack;
+      }
+      await sleep(700);
+    }
     const withBack = await this.findMessageWithBack(peer);
     if (withBack) return withBack;
     return this.getLatestMessage(peer);
