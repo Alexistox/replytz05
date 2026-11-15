@@ -29,6 +29,8 @@ class BankTransactionUserbot {
     this.aiBusyChats = new Set();
     this.claudeCodeBusy = false;
     this.claudeCodeBusyChats = new Set();
+    /** chatId → timestamp: bỏ qua tin outgoing (echo reply của bot) sau khi /cc trả lời */
+    this.claudeCodeSuppressOutUntil = new Map();
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -575,19 +577,29 @@ class BankTransactionUserbot {
         }
       }
 
-      // Skip tin outgoing (trừ giao dịch ở trên)
-      if (message.out) {
-        return;
-      }
-
-      // Claude Code pilot (admin only): /cc on → mọi tin của admin trong chat này đi tới Claude Code
+      // Claude Code pilot (/cc on): nhận tin thường, cả Saved Messages (outgoing).
+      // Không cần gõ /cc mỗi lần. Bỏ qua echo reply của chính bot.
       if (
         groupSettings.claudeCodePilot === true &&
         messageText.trim() &&
-        this.isOwnerOrAdmin(message)
+        !String(messageText).startsWith('/') &&
+        (this.isOwnerOrAdmin(message) || message.out === true)
       ) {
-        this.processedMessages.set(messageKey, currentTime);
-        await this.handleClaudeCodePilotMessage(message, messageText);
+        const chatKey = String(chatId);
+        const suppressUntil = this.claudeCodeSuppressOutUntil.get(chatKey) || 0;
+        const busy =
+          this.claudeCodeBusy || this.claudeCodeBusyChats.has(chatKey);
+        if (message.out && (busy || Date.now() < suppressUntil)) {
+          // echo từ sendReply / đang xử lý — không gọi Claude lại
+        } else {
+          this.processedMessages.set(messageKey, currentTime);
+          await this.handleClaudeCodePilotMessage(message, messageText);
+          return;
+        }
+      }
+
+      // Skip tin outgoing (trừ giao dịch ở trên)
+      if (message.out) {
         return;
       }
 
@@ -5443,9 +5455,9 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
           `Timeout: ${Math.round(setup.timeoutMs / 1000)}s`,
           '',
           'Trên iPhone: nhắn Telegram với userbot này (DM admin).',
-          '/cc on — bật: mọi tin tiếp theo của bạn → Claude Code trên VPS',
+          '/cc on — bật: tin tiếp theo chỉ cần nhắn thường (không cần /cc)',
           '/cc off — tắt',
-          '/cc <yêu cầu> — hỏi Claude Code một lần (vd: /cc liệt kê chats rồi gửi xin chào cho id …)',
+          '/cc <yêu cầu> — hỏi một lần khi chưa bật mode',
           '',
           'App Claude trên iPhone không gắn trực tiếp session VPS — dùng Telegram.',
           'VPS cần: claude auth login (một lần).',
@@ -5465,8 +5477,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         chatId,
         messageId,
         action === 'on'
-          ? '✅ Đã BẬT Claude Code pilot cho chat này.\nTin nhắn tiếp theo của bạn (admin) sẽ gửi tới Claude Code trên VPS để cầm userbot.'
-          : '❌ Đã TẮT Claude Code pilot cho chat này.'
+          ? '✅ Đã BẬT Claude Code pilot cho chat này.\nTừ giờ chỉ cần nhắn bình thường — không cần /cc.\nGõ /cc off để tắt.'
+          : '❌ Đã TẮT Claude Code pilot cho chat này.\nTin thường không còn gửi tới Claude Code.'
       );
       Utils.log(`🦞 /cc ${action} chat ${chatId}`);
       return;
@@ -5530,6 +5542,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     } finally {
       this.claudeCodeBusy = false;
       this.claudeCodeBusyChats.delete(chatKey);
+      // Tránh vòng lặp: tin outgoing (Saved Messages) của chính bot bị coi là lệnh mới
+      this.claudeCodeSuppressOutUntil.set(chatKey, Date.now() + 8000);
     }
   }
 
