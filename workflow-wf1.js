@@ -539,34 +539,64 @@ class WfRunner {
     const t = String(text || '');
     if (BTN.back.test(t) || BTN.nextPage.test(t)) return false;
     if (BTN.editTxMenu.test(t) || BTN.editTx.test(t)) return false;
+    if (BTN.editTime.test(t)) return false;
     if (BTN.accountValid.test(t)) return false;
-    // Menu chỉnh GD — không phải dòng giao dịch
+    // Menu / field trên màn chi tiết — không phải dòng giao dịch trong list
     if (/t[aạ]o\s*giao\s*d[iị]ch/i.test(t)) return false;
     if (/lo[aạ]i\s*giao\s*d[iị]ch/i.test(t)) return false;
     if (/s[uử]a\s*s[oố]\s*ti[eề]n|s[oố]\s*ti[eề]n/i.test(t)) return false;
     if (/c[oộ]ng\s*ti[eề]n|tr[uừ]\s*ti[eề]n/i.test(t)) return false;
     if (/n[oộ]i\s*dung|ghi\s*ch[uú]/i.test(t) && !DT_COMPACT_RE.test(t)) return false;
-    // Ưu tiên dòng có compact time / ngày giờ
+    if (/th[oờ]i\s*gian/i.test(t) && !DT_COMPACT_RE.test(t) && !DT_SLASH_RE.test(t)) {
+      return false;
+    }
+    if (/^✅|^❌|^✔️|th[aà]nh\s*c[oô]ng|đ[aã]\s*l[uưu]|x[aá]c\s*nh[aậ]n/i.test(t)) {
+      return false;
+    }
+    // Có ngày/giờ trên label → chắc là dòng GD
     if (DT_COMPACT_RE.test(t) || DT_SLASH_RE.test(t)) return true;
-    // Còn lại: button không phải menu đã lọc
+    // Còn lại: coi là GD nếu đã lọc hết menu/field ở trên
     return true;
   }
 
   /**
-   * Sau chỉnh thời gian: chờ tin mới → Quay lại → Quay lại → về list GD.
+   * Sau chỉnh thời gian: chờ tin mới → luôn Quay lại ×2 → về list GD.
    * Sau bỏ qua/mở nhầm: Quay lại tối đa 2 lần cho đến khi thấy list hoặc next.
    */
   async returnToTransactionList(msg, peer, { afterEdit = false } = {}) {
     if (afterEdit) {
       await sleep(2500);
       msg = (await this.getLatestMessage(peer)) || msg;
+      // Bắt buộc 2 lần Quay lại — không early-break theo txLike (màn confirm/chi tiết hay dính button giả)
+      for (let i = 0; i < 2; i++) {
+        msg = (await this.getLatestMessage(peer)) || msg;
+        let flat = await this.getButtons(msg);
+        if (!findButton(flat, BTN.back)) {
+          // Tin mới chưa kịp có keyboard — chờ thêm rồi thử lại
+          await sleep(1500);
+          msg = (await this.getLatestMessage(peer)) || msg;
+          flat = await this.getButtons(msg);
+        }
+        if (!findButton(flat, BTN.back)) {
+          const Utils = require('./utils');
+          Utils.log(
+            `⚠️ ${this.label} afterEdit: không thấy Quay lại (lần ${i + 1}). Buttons: ${flat.map((b) => b.text).join(' | ') || '(không có)'}`
+          );
+          break;
+        }
+        await sleep(1200);
+        msg = await this.clickButton(msg, BTN.back, peer);
+      }
+      await sleep(800);
+      return (await this.getLatestMessage(peer)) || msg;
     }
+
     for (let i = 0; i < 2; i++) {
       const flat = await this.getButtons(msg);
       const txLike = flat.filter((b) => this.isLikelyTransactionButton(b.text));
       const hasNext = !!findButton(flat, BTN.nextPage);
-      // Đã về list (có GD hoặc nút trang sau) và không chỉ còn Quay lại
-      if (txLike.length > 0 || (hasNext && i > 0)) {
+      // Đã về list (có GD có ngày/giờ hoặc nút trang sau)
+      if (txLike.length > 0 || hasNext) {
         break;
       }
       if (!findButton(flat, BTN.back)) {
@@ -574,7 +604,7 @@ class WfRunner {
         msg = (await this.getLatestMessage(peer)) || msg;
         continue;
       }
-      await sleep(afterEdit ? 1200 : 800);
+      await sleep(800);
       msg = await this.clickButton(msg, BTN.back, peer);
     }
     await sleep(800);
