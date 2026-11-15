@@ -560,20 +560,16 @@ class WfRunner {
   }
 
   /**
-   * Sau chỉnh thời gian: chờ tin mới → luôn Quay lại ×2 → về list GD.
+   * Sau chỉnh thời gian: ấn Quay lại → Quay lại ngay (không chờ tin mới).
    * Sau bỏ qua/mở nhầm: Quay lại tối đa 2 lần cho đến khi thấy list hoặc next.
    */
   async returnToTransactionList(msg, peer, { afterEdit = false } = {}) {
     if (afterEdit) {
-      await sleep(2500);
-      msg = (await this.getLatestMessage(peer)) || msg;
-      // Bắt buộc 2 lần Quay lại — không early-break theo txLike (màn confirm/chi tiết hay dính button giả)
+      // Không chờ tin mới — bấm Quay lại ngay trên message hiện có, rồi Quay lại tiếp
       for (let i = 0; i < 2; i++) {
-        msg = (await this.getLatestMessage(peer)) || msg;
         let flat = await this.getButtons(msg);
         if (!findButton(flat, BTN.back)) {
-          // Tin mới chưa kịp có keyboard — chờ thêm rồi thử lại
-          await sleep(1500);
+          // Thử lấy tin mới nhất nếu keyboard không còn trên msg cũ
           msg = (await this.getLatestMessage(peer)) || msg;
           flat = await this.getButtons(msg);
         }
@@ -584,10 +580,10 @@ class WfRunner {
           );
           break;
         }
-        await sleep(1200);
+        await sleep(400);
         msg = await this.clickButton(msg, BTN.back, peer);
       }
-      await sleep(800);
+      await sleep(600);
       return (await this.getLatestMessage(peer)) || msg;
     }
 
@@ -710,7 +706,7 @@ class WfRunner {
           fixedThisPass += 1;
           await this.notify(
             controlChatId,
-            `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n⏳ Chờ tin mới rồi Quay lại ×2…`,
+            `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n↩️ Quay lại ×2…`,
             replyTo
           );
           msg = await this.returnToTransactionList(detail, peer, {
