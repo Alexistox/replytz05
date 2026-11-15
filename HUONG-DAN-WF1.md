@@ -2,6 +2,8 @@
 
 Ba workflow **khác nhau**, mỗi cái một bot riêng.
 
+**Quyền:** `/wf*` (và `/cc`) chỉ theo **admin/chủ Telegram của đúng nhóm** đang gõ lệnh. Không dùng quyền admin bot cục bộ (`adminUsers` / PERMANENT_ADMIN). Trong DM thì người đang chat với userbot.
+
 ## WF1 — sửa thời gian **không giây**
 
 ```text
