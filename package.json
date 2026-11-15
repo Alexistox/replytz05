@@ -7,7 +7,9 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "node test.js",
-    "test-duplicate": "node test-duplicate.js"
+    "test-ai": "node test-ai.js",
+    "test-duplicate": "node test-duplicate.js",
+    "control": "node control-cli.js"
   },
   "dependencies": {
     "dotenv": "^18.0.6",

@@ -31,16 +31,44 @@ module.exports = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
 
+  // AI chat (ý 1: auto-reply theo chat, mặc định TẮT — bật bằng /ai on)
+  // AI_PROVIDER=openai|claude|grok
+  aiProvider: process.env.AI_PROVIDER || 'openai',
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+  xaiApiKey: process.env.XAI_API_KEY || '',
+  aiModel: process.env.AI_MODEL || '',
+  aiSystemPrompt:
+    process.env.AI_SYSTEM_PROMPT ||
+    'Bạn là trợ lý ngắn gọn trên Telegram. Trả lời bằng tiếng Việt trừ khi người dùng dùng ngôn ngữ khác. Không bịa số liệu.',
+  aiMaxHistory: parseInt(process.env.AI_MAX_HISTORY || '12', 10),
+
+  // Control API (ý 2: Cursor/Claude/Grok điều khiển userbot qua HTTP localhost)
+  // Bắt buộc CONTROL_API_TOKEN mới lắng nghe. Chỉ bind 127.0.0.1 mặc định.
+  controlApiHost: process.env.CONTROL_API_HOST || '127.0.0.1',
+  controlApiPort: parseInt(process.env.CONTROL_API_PORT || '3847', 10),
+  controlApiToken: process.env.CONTROL_API_TOKEN || '',
+
+  // Claude Code pilot (Telegram /cc → claude CLI trên VPS → control-cli)
+  // CLAUDE_CODE_ENABLED=0 để tắt. Cần: npm i -g @anthropic-ai/claude-code && claude auth login
+  claudeCodeEnabled: process.env.CLAUDE_CODE_ENABLED !== '0',
+  claudeCodeBin: process.env.CLAUDE_CODE_BIN || '',
+  claudeCodeTimeoutMs: parseInt(process.env.CLAUDE_CODE_TIMEOUT_MS || '180000', 10),
+  claudeCodeSystemPrompt: process.env.CLAUDE_CODE_SYSTEM_PROMPT || '',
+
   /** User ID Telegram luôn có quyền admin (không thể gỡ bằng /adremove). .env: PERMANENT_ADMIN_USER_IDS */
   permanentAdminUserIds: envList('PERMANENT_ADMIN_USER_IDS'),
 
   // Default settings
   defaultSettings: {
+    // workflow.wf1BotPeer / wf2BotPeer / wf3BotPeer — mỗi WF một bot
     replyMessage: '1', // Tin nhắn reply
     calEnabled: false, // /cal on|on admin|off (admin) — toàn bot, mọi nhóm/chat
     copyPolicyEnabled: true, // /policy on|off — lọc QC/cờ bạc khi copy và setforward
     calAdminOnly: false, // khi true: chỉ admin mới gửi biểu thức được tính (cần /cal on admin)
-    groupSettings: {}, // Mỗi nhóm: { replyEnabled }
+    workflow: {}, // { wf1BotPeer, wf2BotPeer, wf3BotPeer, wfBotPeer? (legacy→wf1) }
+    groupSettings: {}, // Mỗi nhóm: { replyEnabled, aiEnabled?, aiPrompt?, claudeCodePilot? }
+    aiProvider: null, // override runtime: openai|claude|grok (null = dùng env)
+    aiModel: null,
     pic2Settings: {}, // Pic2: { [groupId]: [ { id, enabled, targetUser, replyMessage }, ... ] }
     forwardRules: [], // Rules cho auto forward: { sourceGroupId, destGroupId, trigger, createdBy, createdTime, status }
     mirrorTriggers: {}, // Mirror 1/2/3: { [groupBId]: [userId, ...] } — chỉ user trong list mới mirror về A
