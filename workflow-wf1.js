@@ -516,56 +516,138 @@ class WfRunner {
     return flattenButtons(rows);
   }
 
+  buttonFingerprint(flat) {
+    return (flat || []).map((b) => String(b.text || '')).join('||');
+  }
+
   /**
-   * Chờ tin có keyboard trước khi bấm (mọi WF1/WF3/WF4).
-   * BankAo hay chậm hoặc trả tin không nút sau /start.
+   * Chờ tin có keyboard. Quan trọng: không lấy keyboard CŨ.
+   * - afterId: chỉ nhận tin id > afterId, hoặc cùng id nhưng đổi nút (bot edit)
+   * - notFingerprint: từ chối nếu bộ nút giống màn trước
    */
   async waitForMessageWithButtons(
     peer,
-    { minButtons = 1, timeoutMs = 12000, preferMsg = null } = {}
+    {
+      minButtons = 1,
+      timeoutMs = 15000,
+      afterId = 0,
+      notFingerprint = null,
+      allowSameIdChanged = true,
+      requireButtons = true,
+    } = {}
   ) {
+    const Utils = require('./utils');
     const deadline = Date.now() + timeoutMs;
-    let lastWithAny = null;
+    let lastCand = null;
     while (Date.now() < deadline) {
-      if (preferMsg) {
-        const flatP = await this.getButtons(preferMsg);
-        if (flatP.length >= minButtons) return preferMsg;
-      }
       const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
       for (const m of msgs || []) {
         if (!m) continue;
         const flat = await this.getButtons(m);
-        if (flat.length >= minButtons) return m;
-        if (flat.length) lastWithAny = m;
+        const fp = this.buttonFingerprint(flat);
+        const enough = flat.length >= minButtons;
+        const changed = notFingerprint != null && fp && fp !== notFingerprint;
+        const newer = !afterId || m.id > afterId;
+        const sameIdNewKeys =
+          allowSameIdChanged &&
+          afterId &&
+          m.id === afterId &&
+          changed &&
+          enough;
+
+        if (requireButtons && !enough) continue;
+        if (notFingerprint != null && fp === notFingerprint) continue;
+
+        if (newer && enough) {
+          Utils.log(
+            `${this.label} keyboard sẵn sàng #${m.id} (${flat.length} nút): ${flat
+              .map((b) => b.text)
+              .slice(0, 4)
+              .join(' | ')}`
+          );
+          return m;
+        }
+        if (sameIdNewKeys) {
+          Utils.log(
+            `${this.label} keyboard đổi trên #${m.id}: ${flat
+              .map((b) => b.text)
+              .slice(0, 4)
+              .join(' | ')}`
+          );
+          return m;
+        }
+        if (enough) lastCand = m;
       }
-      await sleep(600);
+      // Không có nút (prompt nhập text) nhưng tin mới hơn — chấp nhận nếu không requireButtons
+      if (!requireButtons && afterId) {
+        for (const m of msgs || []) {
+          if (m && m.id > afterId) return m;
+        }
+      }
+      await sleep(700);
     }
-    return lastWithAny || preferMsg || (await this.getLatestMessage(peer));
+    return lastCand || (await this.getLatestMessage(peer));
   }
 
-  /** Đảm bảo msg đang có đủ nút; không thì lấy tin keyboard mới nhất. */
-  async ensureButtons(msg, peer, { minButtons = 1, timeoutMs = 10000 } = {}) {
+  /** Đảm bảo msg có đủ nút; nếu thiếu thì chờ tin/keyboard phù hợp (không dính màn cũ). */
+  async ensureButtons(
+    msg,
+    peer,
+    { minButtons = 1, timeoutMs = 12000, afterId = 0, notFingerprint = null } = {}
+  ) {
     const flat = await this.getButtons(msg);
-    if (flat.length >= minButtons) return msg;
+    const fp = this.buttonFingerprint(flat);
+    const okFp = notFingerprint == null || fp !== notFingerprint;
+    if (flat.length >= minButtons && okFp && (!afterId || msg?.id > afterId || msg?.id === afterId)) {
+      // Nếu yêu cầu màn mới (afterId) mà msg vẫn là tin cũ cùng fingerprint → phải chờ
+      if (afterId && msg?.id <= afterId && (!notFingerprint || fp === notFingerprint)) {
+        /* fall through */
+      } else if (flat.length >= minButtons && okFp) {
+        return msg;
+      }
+    }
     if (!peer) return msg;
     const Utils = require('./utils');
     Utils.log(
-      `${this.label} chờ keyboard (≥${minButtons}) — hiện ${flat.length || 0} nút`
+      `${this.label} chờ keyboard (≥${minButtons}${afterId ? `, sau #${afterId}` : ''}) — hiện ${flat.length || 0} nút`
     );
     return (
       (await this.waitForMessageWithButtons(peer, {
         minButtons,
         timeoutMs,
-        preferMsg: msg,
+        afterId,
+        notFingerprint,
       })) || msg
     );
   }
 
   async clickButton(msg, target, peer) {
-    // Luôn chờ keyboard trước khi bấm
-    const need =
-      typeof target === 'number' ? Math.max(1, target + 1) : 1;
-    msg = await this.ensureButtons(msg, peer, { minButtons: need });
+    // Chờ keyboard trên ĐÚNG màn hiện tại — không nhảy về tin cũ chỉ vì đủ số nút
+    if (typeof target === 'number') {
+      msg = await this.ensureButtons(msg, peer, {
+        minButtons: target + 1,
+        afterId: 0,
+        notFingerprint: null,
+      });
+    } else {
+      msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
+      let flatTry = await this.getButtons(msg);
+      if (!findButton(flatTry, target) && peer) {
+        // Nút chưa có trên msg — chờ tin có đúng nút (không dùng fingerprint cũ)
+        const deadline = Date.now() + 12000;
+        while (Date.now() < deadline) {
+          const cand = await this.waitForMessageWithButtons(peer, {
+            minButtons: 1,
+            timeoutMs: 2000,
+          });
+          if (cand && findButton(await this.getButtons(cand), target)) {
+            msg = cand;
+            break;
+          }
+          await sleep(500);
+        }
+      }
+    }
     const flat = await this.getButtons(msg);
     const btn = findButton(flat, target);
     if (!btn) {
@@ -577,27 +659,102 @@ class WfRunner {
 
   /** Bấm đúng ô (row/col) — dùng khi nhiều GD trùng tên trên list. */
   async clickAt(msg, row, col, peer) {
-    // Đảm bảo đúng msg còn keyboard trước khi click tọa độ
     if (peer) {
       const flat = await this.getButtons(msg);
       if (!flat.length) {
         msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
       }
     }
+    const beforeId = msg?.id || 0;
+    const beforeFp = this.buttonFingerprint(await this.getButtons(msg));
     await msg.click({ i: row, j: col });
-    await sleep(1800);
+    await sleep(900);
     if (!peer) return null;
-    // Sau bấm: ưu tiên tin có keyboard mới; không có thì latest (vd prompt nhập giờ)
+    // Bắt buộc chờ màn/keyboard MỚI (id mới hoặc nút đổi) — tránh bấm nút 2 trên màn 1
+    const next = await this.waitForMessageWithButtons(peer, {
+      minButtons: 1,
+      timeoutMs: 15000,
+      afterId: beforeId,
+      notFingerprint: beforeFp,
+      allowSameIdChanged: true,
+    });
+    if (next) return next;
+    // Prompt nhập text không có nút
     return (
       (await this.waitForMessageWithButtons(peer, {
-        minButtons: 1,
-        timeoutMs: 4500,
+        minButtons: 0,
+        timeoutMs: 4000,
+        afterId: beforeId,
+        requireButtons: false,
       })) || (await this.getLatestMessage(peer))
     );
   }
 
   async clickIndex(msg, index, peer) {
     return this.clickButton(msg, index, peer);
+  }
+
+  /**
+   * /start → chờ KB → bấm nút 1 → chờ KB mới → bấm nút 2 → chờ KB mới.
+   * Dùng chung WF1/WF3/WF4 để không bấm sớm khi bot chậm.
+   */
+  async startAndClickFirstTwo(peer, controlChatId, replyTo) {
+    await this.bot.client.sendMessage(peer, { message: '/start' });
+    await sleep(1000);
+    let msg = await this.waitForMessageWithButtons(peer, {
+      minButtons: 1,
+      timeoutMs: 15000,
+    });
+    if (!msg || !(await this.getButtons(msg)).length) {
+      await this.bot.client.sendMessage(peer, { message: '/start' });
+      await sleep(1500);
+      msg = await this.waitForMessageWithButtons(peer, {
+        minButtons: 1,
+        timeoutMs: 12000,
+      });
+    }
+    if (!msg || !(await this.getButtons(msg)).length) {
+      throw new Error('Không nhận được keyboard từ bot sau /start');
+    }
+
+    const fp0 = this.buttonFingerprint(await this.getButtons(msg));
+    if (controlChatId) {
+      await this.notify(controlChatId, '👆 Bấm button đầu tiên…', replyTo);
+    }
+    msg = await this.clickIndex(msg, 0, peer);
+
+    // Chờ rõ màn 2 (khác fingerprint màn 1) trước khi bấm nút thứ 2
+    msg = await this.ensureButtons(msg, peer, {
+      minButtons: 1,
+      timeoutMs: 15000,
+      afterId: 0,
+      notFingerprint: fp0,
+    });
+    let flat2 = await this.getButtons(msg);
+    if (!flat2.length || this.buttonFingerprint(flat2) === fp0) {
+      msg = await this.waitForMessageWithButtons(peer, {
+        minButtons: 1,
+        timeoutMs: 12000,
+        notFingerprint: fp0,
+      });
+      flat2 = await this.getButtons(msg);
+    }
+    if (!flat2.length) {
+      throw new Error('Sau nút 1 không thấy keyboard màn 2');
+    }
+    if (controlChatId) {
+      await this.notify(controlChatId, '👆 Bấm button thứ 2…', replyTo);
+    }
+    const fp1 = this.buttonFingerprint(flat2);
+    msg = await this.clickIndex(msg, Math.min(1, flat2.length - 1), peer);
+
+    // Chờ màn filter (còn hạn/hết hạn…)
+    msg = await this.ensureButtons(msg, peer, {
+      minButtons: 1,
+      timeoutMs: 15000,
+      notFingerprint: fp1,
+    });
+    return msg;
   }
 
   /**
@@ -744,30 +901,7 @@ class WfRunner {
     });
 
     await this.notify(controlChatId, `📤 Gửi /start tới ${peerCfg}…`, replyTo);
-    await this.bot.client.sendMessage(peer, { message: '/start' });
-    await sleep(1200);
-    let msg = await this.waitForMessageWithButtons(peer, {
-      minButtons: 1,
-      timeoutMs: 15000,
-    });
-    if (!msg || !(await this.getButtons(msg)).length) {
-      await this.bot.client.sendMessage(peer, { message: '/start' });
-      await sleep(1500);
-      msg = await this.waitForMessageWithButtons(peer, {
-        minButtons: 1,
-        timeoutMs: 12000,
-      });
-    }
-    if (!msg || !(await this.getButtons(msg)).length) {
-      throw new Error('Không nhận được keyboard từ bot sau /start');
-    }
-
-    await this.notify(controlChatId, '👆 Bấm button đầu tiên…', replyTo);
-    msg = await this.clickIndex(msg, 0, peer);
-
-    await this.notify(controlChatId, '👆 Bấm button thứ 2…', replyTo);
-    msg = await this.ensureButtons(msg, peer, { minButtons: 2 });
-    msg = await this.clickIndex(msg, 1, peer);
+    let msg = await this.startAndClickFirstTwo(peer, controlChatId, replyTo);
 
     const flatFilters = await this.getButtons(msg);
     const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
@@ -2046,27 +2180,7 @@ class WfRunner {
       `📤 ${this.label} list: tìm TK SĐT \`${phones.join(', ')}\`…`,
       replyTo
     );
-    await this.bot.client.sendMessage(peer, { message: '/start' });
-    await sleep(1200);
-    let msg = await this.waitForMessageWithButtons(peer, {
-      minButtons: 1,
-      timeoutMs: 15000,
-    });
-    if (!msg || !(await this.getButtons(msg)).length) {
-      await this.bot.client.sendMessage(peer, { message: '/start' });
-      await sleep(1500);
-      msg = await this.waitForMessageWithButtons(peer, {
-        minButtons: 1,
-        timeoutMs: 12000,
-      });
-    }
-    if (!msg || !(await this.getButtons(msg)).length) {
-      throw new Error('Không nhận được tin/button từ bot sau /start');
-    }
-    msg = await this.clickIndex(msg, 0, peer);
-    msg = await this.ensureButtons(msg, peer, { minButtons: 2 });
-    msg = await this.clickIndex(msg, 1, peer);
-    msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
+    let msg = await this.startAndClickFirstTwo(peer, controlChatId, replyTo);
 
     const flatFilters = await this.getButtons(msg);
     const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));

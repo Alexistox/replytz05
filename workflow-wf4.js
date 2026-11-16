@@ -726,32 +726,7 @@ class Wf4Runner extends WfRunner {
       }
     }
 
-    await this.bot.client.sendMessage(peer, { message: '/start' });
-    await sleep(1200);
-    let msg = await this.waitForMessageWithButtons(peer, {
-      minButtons: 1,
-      timeoutMs: 15000,
-    });
-    if (!msg || !(await this.getButtons(msg)).length) {
-      await this.bot.client.sendMessage(peer, { message: '/start' });
-      await sleep(1500);
-      msg = await this.waitForMessageWithButtons(peer, {
-        minButtons: 1,
-        timeoutMs: 12000,
-      });
-    }
-    if (!msg || !(await this.getButtons(msg)).length) {
-      throw new Error(
-        'Sau /start bot B không có button (keyboard trống). Thử /wf4 lại hoặc mở bot B tay một lần.'
-      );
-    }
-
-    await this.notify(controlChatId, '👆 Bấm button đầu tiên…', saved.replyTo);
-    msg = await this.clickIndex(msg, 0, peer);
-    await this.notify(controlChatId, '👆 Bấm button thứ 2…', saved.replyTo);
-    msg = await this.ensureButtons(msg, peer, { minButtons: 2 });
-    msg = await this.clickIndex(msg, 1, peer);
-    msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
+    let msg = await this.startAndClickFirstTwo(peer, controlChatId, saved.replyTo);
 
     const flatFilters = await this.getButtons(msg);
     const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
