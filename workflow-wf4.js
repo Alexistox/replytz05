@@ -169,7 +169,7 @@ class Wf4Runner extends WfRunner {
   async waitForUpdatedDetailTime(peer, targetTime, { beforeId = 0, oldTime = null } = {}) {
     let lastSeen = null;
     for (let i = 0; i < 10; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      const msgs = await this.getMessagesSafe(peer, { limit: 12 });
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
         const body = String(m.message || m.text || '');
@@ -862,7 +862,7 @@ class Wf4Runner extends WfRunner {
   }
 
   async findMessageWithButtons(peer, pred, limit = 12) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       if (!m) continue;
       const flat = await this.getButtons(m);
@@ -1103,7 +1103,7 @@ class Wf4Runner extends WfRunner {
   }
 
   async getLatestBotMsgId(peer) {
-    const msgs = await this.bot.client.getMessages(peer, { limit: 5 });
+    const msgs = await this.getMessagesSafe(peer, { limit: 5 });
     return msgs && msgs[0] ? msgs[0].id : 0;
   }
 
@@ -1112,12 +1112,12 @@ class Wf4Runner extends WfRunner {
     while (Date.now() < deadline) {
       const s = this.getSession(controlChatId);
       if (!s || s.cancel) return null;
-      const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+      const msgs = await this.getMessagesSafe(peer, { limit: 8 });
       if (msgs && msgs.length) {
         const newer = msgs.filter((m) => m && m.id > afterId && !m.out);
         if (newer.length) return newer.reduce((a, b) => (a.id > b.id ? a : b));
       }
-      await sleep(450);
+      await sleep(500);
     }
     return null;
   }
@@ -1151,7 +1151,7 @@ class Wf4Runner extends WfRunner {
   }
 
   async findFlipConfirmMessage(peer, limit = 10) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       if (this.isFlipConfirmScreen(m)) return m;
     }
@@ -1195,7 +1195,7 @@ class Wf4Runner extends WfRunner {
 
   /** Tin chi tiết Sửa Giao Dịch gần nhất (có Quay lại). */
   async findDetailMessage(peer, limit = 12) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       const body = String(m?.message || m?.text || '');
       if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;

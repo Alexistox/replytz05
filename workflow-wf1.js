@@ -416,6 +416,73 @@ class WfRunner {
     this.cmd = '/' + this.id;
     this.cmdBot = '/' + this.id + 'bot';
     this.sessions = new Map();
+    /** Chống FLOOD_WAIT GetHistory: tối thiểu ms giữa 2 lần getMessages / peer */
+    this.histMinGapMs = Number(opts.histMinGapMs) > 0 ? Number(opts.histMinGapMs) : 550;
+    /** @type {Map<string, { lastAt: number, lastLimit: number, lastMsgs: any, inflight: Promise<any>|null }>} */
+    this._histGate = new Map();
+  }
+
+  _peerHistKey(peer) {
+    if (peer == null) return 'null';
+    if (typeof peer === 'object') {
+      if (peer.id != null) return `id:${peer.id}`;
+      if (peer.username) return `u:${peer.username}`;
+    }
+    return String(peer);
+  }
+
+  /**
+   * getMessages có throttle + gộp request trùng (tránh Sleeping for Ns on flood wait GetHistory).
+   * Logic nghiệp vụ không đổi — chỉ giới hạn tần suất GetHistory.
+   */
+  async getMessagesSafe(peer, opts = {}) {
+    const limit = Math.max(1, Number(opts.limit) || 10);
+    const minGap = Math.max(200, Number(opts.minGapMs) || this.histMinGapMs);
+    const force = opts.force === true;
+    const key = this._peerHistKey(peer);
+    let gate = this._histGate.get(key);
+    if (!gate) {
+      gate = { lastAt: 0, lastLimit: 0, lastMsgs: null, inflight: null };
+      this._histGate.set(key, gate);
+    }
+
+    if (gate.inflight) {
+      try {
+        await gate.inflight;
+      } catch (_e) {
+        /* fetch lỗi — caller bên dưới sẽ thử lại */
+      }
+      if (
+        !force &&
+        gate.lastMsgs &&
+        gate.lastLimit >= limit &&
+        Date.now() - gate.lastAt < minGap
+      ) {
+        return gate.lastMsgs;
+      }
+    }
+
+    const elapsed = Date.now() - gate.lastAt;
+    if (!force && gate.lastAt > 0 && elapsed < minGap) {
+      if (gate.lastMsgs && gate.lastLimit >= limit) {
+        return gate.lastMsgs;
+      }
+      await sleep(minGap - elapsed);
+    }
+
+    const run = (async () => {
+      const msgs = await this.bot.client.getMessages(peer, { limit });
+      gate.lastMsgs = msgs;
+      gate.lastLimit = limit;
+      gate.lastAt = Date.now();
+      return msgs;
+    })();
+    gate.inflight = run;
+    try {
+      return await run;
+    } finally {
+      if (gate.inflight === run) gate.inflight = null;
+    }
   }
 
   extractContentTime(text) {
@@ -506,7 +573,7 @@ class WfRunner {
   }
 
   async getLatestMessage(peer) {
-    const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+    const msgs = await this.getMessagesSafe(peer, { limit: 8 });
     return msgs && msgs[0] ? msgs[0] : null;
   }
 
@@ -540,7 +607,7 @@ class WfRunner {
     const deadline = Date.now() + timeoutMs;
     let lastCand = null;
     while (Date.now() < deadline) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      const msgs = await this.getMessagesSafe(peer, { limit: 12 });
       for (const m of msgs || []) {
         if (!m) continue;
         const flat = await this.getButtons(m);
@@ -727,7 +794,7 @@ class WfRunner {
     // Nhập Thời gian: bot hỏi text, không có nút — đừng poll keyboard
     if (expectPrompt) {
       await sleep(300);
-      const msgs = await this.bot.client.getMessages(peer, { limit: 6 });
+      const msgs = await this.getMessagesSafe(peer, { limit: 6 });
       for (const m of msgs || []) {
         if (m && m.id > beforeId) return m;
       }
@@ -738,7 +805,7 @@ class WfRunner {
     const Utils = require('./utils');
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 10 });
+      const msgs = await this.getMessagesSafe(peer, { limit: 10 });
       for (const m of msgs || []) {
         if (!m) continue;
         const flat = await this.getButtons(m);
@@ -764,7 +831,8 @@ class WfRunner {
           }
         }
       }
-      await sleep(200);
+      // Poll thưa hơn — GetHistory đã throttle; tránh spam khi cache chưa đổi
+      await sleep(450);
     }
     return (await this.getLatestMessage(peer)) || msg;
   }
@@ -1296,7 +1364,7 @@ class WfRunner {
 
   /** Tìm message gần nhất còn button Quay lại (khi đang kẹt màn nhập text). */
   async findMessageWithBack(peer, limit = 12) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       const flat = await this.getButtons(m);
       if (findButton(flat, BTN.back)) return m;
@@ -1435,7 +1503,7 @@ class WfRunner {
   }
 
   async findTxListMessage(peer, limit = 15) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       const flat = await this.getButtons(m);
       if (this.isTxListScreen(m, flat)) return m;
@@ -1880,7 +1948,7 @@ class WfRunner {
     const Utils = require('./utils');
     let lastSeen = null;
     for (let i = 0; i < 12; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      const msgs = await this.getMessagesSafe(peer, { limit: 12 });
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
         const body = String(m.message || m.text || '');
@@ -1957,7 +2025,7 @@ class WfRunner {
 
     let newestWithBack = null;
     for (let i = 0; i < 12; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      const msgs = await this.getMessagesSafe(peer, { limit: 12 });
       let best = null;
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
@@ -2075,7 +2143,7 @@ class WfRunner {
   }
 
   async findFlipConfirmMessage(peer, limit = 10) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       if (this.isFlipConfirmScreen(m)) return m;
     }
@@ -2083,7 +2151,7 @@ class WfRunner {
   }
 
   async findDetailMessage(peer, limit = 12) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       const body = String(m?.message || m?.text || '');
       if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
