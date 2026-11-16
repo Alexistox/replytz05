@@ -1279,38 +1279,52 @@ class Wf4Runner extends WfRunner {
             extractFieldTime(String(detail?.message || detail?.text || ''), false) ||
             null;
           detail = await this.editTimeOnDetail(detail, peer, contentTime);
-          // Đọc tin mới — tránh bản cũ còn Quay lại nhưng giờ chưa đổi
-          detail =
-            (await this.waitForUpdatedDetailTime(peer, contentTime, {
-              beforeId: beforeEditId,
-              oldTime,
-            })) || detail;
-          body = String(detail?.message || detail?.text || '');
-          let rawAfter = extractFieldTimeRaw(body);
-          let fieldAfter = extractFieldTime(body, false);
+          // editTimeOnDetail đã Quay lại tin mới nhất để commit giờ
           const okTime = (raw, field) =>
             fieldMatchesTarget(raw, field, contentTime, false) ||
             (field &&
               contentTime &&
               field.replace(/:\d{2}$/, '') === contentTime.replace(/:\d{2}$/, ''));
+
+          let rawAfter = extractFieldTimeRaw(
+            String(detail?.message || detail?.text || '')
+          );
+          let fieldAfter = extractFieldTime(
+            String(detail?.message || detail?.text || ''),
+            false
+          );
+
           if (!okTime(rawAfter, fieldAfter)) {
-            await sleep(1000);
-            const again = await this.waitForUpdatedDetailTime(peer, contentTime, {
-              beforeId: beforeEditId,
-              oldTime,
-            });
-            if (again) {
-              detail = again;
-              body = String(detail.message || detail.text || '');
+            detail =
+              (await this.waitForUpdatedDetailTime(peer, contentTime, {
+                beforeId: beforeEditId,
+                oldTime,
+              })) || detail;
+            body = String(detail?.message || detail?.text || '');
+            rawAfter = extractFieldTimeRaw(body);
+            fieldAfter = extractFieldTime(body, false);
+          }
+
+          // Sau Quay lại có thể về list — mở lại GD để xác nhận giờ mới
+          if (!okTime(rawAfter, fieldAfter)) {
+            await sleep(800);
+            const recheck = await this.findAndOpenItemOnB(s, fields, controlChatId);
+            if (recheck) {
+              detail = recheck.detail;
+              body = recheck.body;
+              page = recheck.page || page;
+              s.currentPage = page;
               rawAfter = extractFieldTimeRaw(body);
               fieldAfter = extractFieldTime(body, false);
             }
           }
+
           if (!okTime(rawAfter, fieldAfter)) {
             throw new Error(
               `Sau sửa giờ vẫn lệch: ${rawAfter || fieldAfter} (cần ${contentTime})`
             );
           }
+          body = String(detail?.message || detail?.text || body || '');
           s.stats.fixedTime += 1;
           await this.notify(
             controlChatId,

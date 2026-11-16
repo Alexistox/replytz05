@@ -1396,8 +1396,10 @@ class WfRunner {
         if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
         const flat = await this.getButtons(m);
         if (!findButton(flat, BTN.back)) continue;
+        // Chỉ tin dòng "Thời gian:" — không lấy nhầm giờ trong Nội dung
         const raw = extractFieldTimeRaw(body);
-        const field = extractFieldTime(body, this.keepSeconds);
+        if (!raw) continue;
+        const field = extractFieldTime(`Thời gian: ${raw}`, this.keepSeconds);
         lastSeen = m;
         if (fieldMatchesTarget(raw, field, targetTime, this.keepSeconds)) {
           Utils.log(
@@ -1410,7 +1412,8 @@ class WfRunner {
           oldTime &&
           field &&
           field !== oldTime &&
-          String(field).replace(/:\d{2}$/, '') === String(targetTime).replace(/:\d{2}$/, '')
+          String(field).replace(/:\d{2}$/, '') ===
+            String(targetTime).replace(/:\d{2}$/, '')
         ) {
           Utils.log(`${this.label} chi tiết mới #${m.id}: Thời gian=${field} (soft)`);
           return m;
@@ -1479,29 +1482,65 @@ class WfRunner {
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(1200);
+    await sleep(1000);
 
-    // Chờ tin chi tiết mới (không lấy tin cũ còn Quay lại nhưng giờ cũ)
+    // BankAo: sau khi nhập giờ phải Quay lại ở TIN MỚI NHẤT mới commit/cập nhật giờ
+    let newestWithBack = null;
+    for (let i = 0; i < 10; i++) {
+      const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+      for (const m of msgs || []) {
+        if (!m || (beforeId && m.id <= beforeId)) continue;
+        const body = String(m.message || m.text || '');
+        // Bỏ qua prompt nhập nếu chưa có keyboard Quay lại
+        const flatM = await this.getButtons(m);
+        const back = findButton(flatM, BTN.back) || findButton(flatM, BTN.backLoose);
+        if (!back) continue;
+        // Ưu tiên tin mới nhất có Quay lại (chi tiết / xác nhận / sau nhập giờ)
+        newestWithBack = m;
+        break;
+      }
+      if (newestWithBack) break;
+      await sleep(600);
+    }
+
+    if (newestWithBack) {
+      const flatN = await this.getButtons(newestWithBack);
+      const backBtn =
+        findButton(flatN, BTN.back) || findButton(flatN, BTN.backLoose);
+      Utils.log(
+        `${this.label} sau nhập giờ → Quay lại tin mới #${newestWithBack.id}: ${backBtn.text}`
+      );
+      await this.clickButton(newestWithBack, backBtn.text, peer);
+      await sleep(1200);
+    } else {
+      Utils.log(`${this.label} sau nhập giờ: chưa thấy tin mới có Quay lại`);
+    }
+
+    // Sau Quay lại mới đọc chi tiết có giờ đã cập nhật (không tin cũ)
     const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
       beforeId,
       oldTime,
     });
     if (updated) return updated;
 
-    // Fallback: tin mới nhất có Quay lại + là màn chi tiết
-    for (let i = 0; i < 4; i++) {
+    // Fallback: tin mới nhất là chi tiết, giờ đã đổi
+    for (let i = 0; i < 5; i++) {
       const latest = await this.getLatestMessage(peer);
       const body = String(latest?.message || latest?.text || '');
       const flatLatest = await this.getButtons(latest);
       if (
         /S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body) &&
-        findButton(flatLatest, BTN.back) &&
-        (!beforeId || latest.id >= beforeId)
+        findButton(flatLatest, BTN.back)
       ) {
+        const raw = extractFieldTimeRaw(body);
         const field = extractFieldTime(body, this.keepSeconds);
-        if (!oldTime || field !== oldTime) return latest;
+        if (fieldMatchesTarget(raw, field, newTime, this.keepSeconds)) {
+          return latest;
+        }
+        // Cùng id detail bị edit tại chỗ
+        if (field && oldTime && field !== oldTime) return latest;
       }
-      await sleep(600);
+      await sleep(700);
     }
     const withBack = await this.findMessageWithBack(peer);
     if (withBack && (!beforeId || withBack.id >= beforeId)) return withBack;
