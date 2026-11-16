@@ -1292,6 +1292,13 @@ class BankTransactionUserbot {
         }
         await this.wf4.handleWfCommand(args, chatId, messageId, messageText);
         break;
+
+      case '/phab':
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF4')) {
+          return;
+        }
+        await this.wf4.handlePhabCommand(messageText, chatId, messageId);
+        break;
     }
   }
 
@@ -1634,6 +1641,7 @@ Hỏi thẻ (卡, 银行卡, 要卡, 换卡, 卡号, ka): gửi "1", nhắn nhó
 /wf2 - WF2 gửi list /bdsd (admin nhóm)
 /wf4bot @A @B - WF4: A nhận /bdsd, B chỉnh GD (admin nhóm)
 /wf4 - WF4 list Cộng/Trừ + /bdsd (không song song WF2)
+/phab - WF4 chạy lại chỉ pha B (không gửi A)
 /cal - Máy tính toàn bot (👑 admin: /cal on | /cal on admin | /cal off; xem mục /cal phía trên)
 /status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại

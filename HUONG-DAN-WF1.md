@@ -79,4 +79,18 @@ rồi sau đó dán tiếp:
 
 **Không** chạy WF2 và WF4 cùng một chat.
 
+Lỗi pha B (không thấy GD / sửa giờ…)? Chạy lại **chỉ B**, không gửi A:
+
+```text
+/phab
+```
+
+Hoặc dán lại list kèm lệnh:
+
+```text
+/phab
+1. Trừ
+/bdsd …
+```
+
 Tắt: `/wf4 off`

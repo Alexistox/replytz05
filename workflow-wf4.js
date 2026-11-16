@@ -521,6 +521,7 @@ class Wf4Runner extends WfRunner {
           '`/wf4 on` — bật, chờ dán list (chưa đụng B)',
           'List: `1. Cộng` / `2. Trừ` + `/bdsd …` (1 mục hoặc nhiều)',
           'Xong 1 batch vẫn ON — dán batch/mục tiếp; `/wf4 off` tắt',
+          '`/phab` — chạy lại **chỉ pha B** (list vừa rồi; hoặc dán list cùng lệnh)',
           '`/wf4 status`',
           'Không chạy song song WF2 cùng chat.',
         ].join('\n')
@@ -601,6 +602,109 @@ class Wf4Runner extends WfRunner {
     }
 
     await this.handleWfBotCommand(args, chatId, messageId);
+  }
+
+  /**
+   * /phab — chạy lại chỉ pha B (Trừ + giờ), không gửi A.
+   * Dùng list vừa lỗi (lastItems) hoặc list dán kèm lệnh.
+   */
+  async handlePhabCommand(rawText, chatId, messageId) {
+    try {
+      this.assertWf2Idle(chatId);
+    } catch (e) {
+      await this.bot.sendReply(chatId, messageId, `❌ ${e.message}`);
+      return;
+    }
+    if (!this.getBotA() || !this.getBotB()) {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        '❌ Chưa đặt 2 bot. Dùng: `/wf4bot @botA @botB` rồi `/wf4 on`.'
+      );
+      return;
+    }
+    if (this.isBusy(chatId)) {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        '⏳ WF4 đang xử lý — đợi xong hoặc `/wf4 off` rồi `/phab`.'
+      );
+      return;
+    }
+
+    let items = null;
+    if (looksLikeWf4List(rawText)) {
+      try {
+        items = extractWf4Items(rawText);
+      } catch (e) {
+        await this.bot.sendReply(chatId, messageId, `❌ Format list: ${e.message}`);
+        return;
+      }
+    }
+
+    let session = this.getSession(chatId);
+    if (!session) {
+      session = {
+        phase: 'await_list',
+        replyTo: messageId,
+        controlChatId: String(chatId),
+        stats: emptyStats(),
+        totalSentA: 0,
+      };
+      this.sessions.set(String(chatId), session);
+    }
+
+    if (!items || !items.length) {
+      items = Array.isArray(session.lastItems) ? session.lastItems.slice() : [];
+    }
+    if (!items.length) {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        [
+          '❗ Không có list để chạy pha B.',
+          'Cách dùng:',
+          '• Sau lỗi batch: gõ `/phab` (dùng lại list vừa rồi)',
+          '• Hoặc dán list kèm: `/phab` + `1. Cộng`/`Trừ` + `/bdsd …`',
+        ].join('\n')
+      );
+      return;
+    }
+
+    session.replyTo = messageId || session.replyTo;
+    session.controlChatId = String(chatId);
+    session.cancel = false;
+    session.items = items;
+    session.lastItems = items.slice();
+    session.stats = emptyStats();
+    // Đánh dấu batch này không gửi A
+    session.stats.sentA = 0;
+    session.phabOnly = true;
+
+    const nCong = items.filter((i) => i.kind === 'cong').length;
+    const nTru = items.filter((i) => i.kind === 'tru').length;
+    await this.notify(
+      chatId,
+      [
+        `🔁 **/phab** — chỉ pha B (${items.length} mục: Cộng ${nCong} · Trừ ${nTru})`,
+        `B=\`${this.getBotB()}\` — **không** gửi A.`,
+        session.chosenAccount
+          ? `TK: ${session.chosenAccount}`
+          : 'Chưa có TK — bot sẽ tự tìm theo SĐT.',
+      ].join('\n'),
+      messageId
+    );
+
+    try {
+      if (session.chosenAccount && session.peer) {
+        await this.resumeEditOnB(chatId);
+      } else {
+        await this.runUntilAccountPick(chatId, messageId);
+      }
+    } catch (err) {
+      await this.notify(chatId, `❌ /phab lỗi mở B: ${err.message}`, messageId);
+      await this.returnToAwaitList(chatId, null);
+    }
   }
 
   phonesFromSessionItems(session) {
@@ -993,6 +1097,10 @@ class Wf4Runner extends WfRunner {
     }
     const queued = s.queuedText;
     delete s.queuedText;
+    // Giữ list vừa chạy để `/phab` chạy lại chỉ pha B
+    if (Array.isArray(s.items) && s.items.length) {
+      s.lastItems = s.items.slice();
+    }
     s.phase = 'await_list';
     s.items = [];
     s.cancel = false;
@@ -1000,9 +1108,12 @@ class Wf4Runner extends WfRunner {
     if (summaryLines && summaryLines.length) {
       await this.notify(
         controlChatId,
-        [...summaryLines, '', '📥 WF4 vẫn **ON** — dán list/mục tiếp (hoặc `/wf4 off`).'].join(
-          '\n'
-        ),
+        [
+          ...summaryLines,
+          '',
+          '📥 WF4 vẫn **ON** — dán list/mục tiếp (hoặc `/wf4 off`).',
+          'Lỗi pha B? Gõ `/phab` để chạy lại chỉ B (không gửi A).',
+        ].join('\n'),
         s.replyTo
       );
     }
