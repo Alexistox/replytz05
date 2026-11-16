@@ -47,7 +47,7 @@ class Wf4Runner extends WfRunner {
   constructor(bot) {
     super(bot, { id: 'wf4', label: 'WF4', keepSeconds: false });
     this.replyWaitMs = 45000;
-    this.gapMs = 600;
+    this.gapMs = 350;
   }
 
   getBotA() {
@@ -123,7 +123,7 @@ class Wf4Runner extends WfRunner {
         `${this.label} LSGD trang ${cur || '?'} → bấm Trước «${prev.text}» về trang 1`
       );
       msg = await this.clickButton(msg, prev.text, peer);
-      await sleep(600);
+      await sleep(300);
       msg =
         (await this.findTxListMessage(peer)) ||
         (await this.getLatestMessage(peer)) ||
@@ -146,7 +146,7 @@ class Wf4Runner extends WfRunner {
         const next = this.findPagerNext(flat);
         if (!next) return { msg, page: cur, total };
         msg = await this.clickButton(msg, next.text, peer);
-        await sleep(700);
+        await sleep(350);
         msg =
           (await this.findTxListMessage(peer)) ||
           (await this.getLatestMessage(peer)) ||
@@ -156,7 +156,7 @@ class Wf4Runner extends WfRunner {
       const prev = this.findPagerPrev(flat);
       if (!prev) return { msg, page: cur, total };
       msg = await this.clickButton(msg, prev.text, peer);
-      await sleep(700);
+      await sleep(350);
       msg =
         (await this.findTxListMessage(peer)) ||
         (await this.getLatestMessage(peer)) ||
@@ -1172,7 +1172,7 @@ class Wf4Runner extends WfRunner {
     }
     Utils.log(`${this.label} click Trừ tiền: ${truBtn.text}`);
     msg = await this.clickButton(msg, truBtn.text, peer);
-    await sleep(1000);
+    await sleep(400);
 
     // Chờ màn "Đã đổi loại giao dịch thành Trừ tiền… Quay lại"
     for (let i = 0; i < 8; i++) {
@@ -1187,7 +1187,7 @@ class Wf4Runner extends WfRunner {
         );
         return confirm;
       }
-      await sleep(600);
+      await sleep(300);
     }
     Utils.log(`${this.label} không thấy màn xác nhận Trừ — dùng latest`);
     return (await this.getLatestMessage(peer)) || msg;
@@ -1240,7 +1240,7 @@ class Wf4Runner extends WfRunner {
     }
     Utils.log(`${this.label} màn xác nhận Trừ → Quay lại: ${backBtn.text}`);
     msg = await this.clickButton(msg, backBtn.text, peer);
-    await sleep(500);
+    await sleep(300);
 
     // Về màn chi tiết Sửa Giao Dịch (đã là Trừ) có nút Sửa Thời Gian
     for (let i = 0; i < 6; i++) {
@@ -1263,7 +1263,7 @@ class Wf4Runner extends WfRunner {
           return { detail, body, page };
         }
       }
-      await sleep(700);
+      await sleep(300);
     }
 
     // Fallback: về list trang 1 rồi mở lại GD
@@ -1397,7 +1397,7 @@ class Wf4Runner extends WfRunner {
       if (!nextBtn) break;
       const before = this.parseLsgdPage(msg)?.page || page;
       msg = await this.clickButton(msg, nextBtn.text, peer);
-      await sleep(700);
+      await sleep(350);
       msg = (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer)) || msg;
       const after = this.parseLsgdPage(msg);
       if (!after || after.page <= before) break;
@@ -1616,7 +1616,7 @@ class Wf4Runner extends WfRunner {
 
           // Sau Quay lại có thể về list — mở lại GD để xác nhận giờ mới
           if (!okTime(rawAfter, fieldAfter)) {
-            await sleep(800);
+            await sleep(400);
             const recheck = await this.findAndOpenItemOnB(s, fields, controlChatId);
             if (recheck) {
               detail = recheck.detail;

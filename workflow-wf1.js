@@ -1485,12 +1485,12 @@ class WfRunner {
 
         Utils.log(`${this.label} afterEdit Quay lại #${step}: ${backBtn.text}`);
         const beforeId = msg?.id || 0;
-        await sleep(300);
+        await sleep(200);
         msg = await this.clickButton(msg, backBtn.text, peer);
 
         // Chờ bảng/tin mới trước lần Quay lại tiếp (nếu cần)
-        for (let t = 0; t < 10; t++) {
-          await sleep(600);
+        for (let t = 0; t < 8; t++) {
+          await sleep(300);
           const latest = await this.getLatestMessage(peer);
           const flatL = await this.getButtons(latest);
           if (this.isTxListScreen(latest, flatL)) {
@@ -1517,14 +1517,14 @@ class WfRunner {
       const hasNext = !!findButton(flat, BTN.nextPage);
       if (txLike.length > 0 || hasNext) break;
       if (!findButton(flat, BTN.back)) {
-        await sleep(800);
+        await sleep(350);
         msg = (await this.getLatestMessage(peer)) || msg;
         continue;
       }
-      await sleep(800);
+      await sleep(300);
       msg = await this.clickButton(msg, BTN.back, peer);
     }
-    await sleep(800);
+    await sleep(300);
     return (await this.ensureTxList(msg, peer)) || msg;
   }
 
