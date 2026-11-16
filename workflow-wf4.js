@@ -695,53 +695,71 @@ class Wf4Runner extends WfRunner {
     }
     Utils.log(`${this.label} click Trừ tiền: ${truBtn.text}`);
     msg = await this.clickButton(msg, truBtn.text, peer);
-    await sleep(1000);
-    // Có thể vẫn ở chi tiết (toggle) hoặc tin mới
+    await sleep(1200);
+    // Bot thường edit tin tại chỗ — lấy lại tin chi tiết mới nhất
+    msg = (await this.findDetailMessage(peer)) || msg;
     let body = String(msg?.message || msg?.text || '');
-    if (!/S[uử]a\s*Giao\s*D[iị]ch/i.test(body)) {
-      const withBack = await this.findMessageWithBack(peer);
-      if (withBack) {
-        msg = withBack;
-        body = String(msg.message || msg.text || '');
-      }
-    }
     const info = bodyAmountInfo(body);
     if (info && info.sign !== '-') {
-      // Một số bot đổi loại xong không còn hiện chi tiết — chấp nhận, sẽ Quay lại mở lại
       Utils.log(
-        `${this.label} sau Trừ chưa thấy sign=- trên màn hiện tại (body slice: ${body.slice(0, 80)})`
+        `${this.label} sau Trừ chưa thấy sign=- (slice: ${body.slice(0, 100)})`
       );
     }
     return msg;
   }
 
+  /** Tin chi tiết Sửa Giao Dịch gần nhất (có Quay lại). */
+  async findDetailMessage(peer, limit = 12) {
+    const msgs = await this.bot.client.getMessages(peer, { limit });
+    for (const m of msgs || []) {
+      const body = String(m?.message || m?.text || '');
+      if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
+      const flat = await this.getButtons(m);
+      if (findButton(flat, BTN.back)) return m;
+    }
+    return null;
+  }
+
+  async messageHasTimeButton(msg) {
+    const flat = await this.getButtons(msg);
+    return flat.some(
+      (b) =>
+        /th[oờ]i\s*gian/i.test(b.text) &&
+        !/ng[uư][oờ]i|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(b.text)
+    );
+  }
+
   /**
-   * Sau đổi Trừ: phải Quay lại, rồi mới vào lại để Sửa Thời Gian.
-   * (Bot không cho sửa giờ ngay trên màn vừa bấm Trừ.)
+   * Sau đổi Trừ: Quay lại một lần, rồi vào lại màn có Sửa Thời Gian.
+   * Ưu tiên còn ở chi tiết; nếu về list thì mở lại GD (khớp mã GD/số tiền).
    */
   async afterFlipBackThenReopenForTime(detailMsg, peer, fields, page, session) {
-    let msg = detailMsg;
-    const flat = await this.getButtons(msg);
-    const backBtn = findButton(flat, BTN.back);
+    let msg = detailMsg || (await this.findDetailMessage(peer));
+    const flat0 = await this.getButtons(msg);
+    const backBtn = findButton(flat0, BTN.back);
     if (backBtn) {
       Utils.log(`${this.label} sau Trừ → Quay lại: ${backBtn.text}`);
       msg = await this.clickButton(msg, backBtn.text, peer);
-      await sleep(900);
-    } else {
-      const withBack = await this.findMessageWithBack(peer);
-      if (withBack) {
-        const flat2 = await this.getButtons(withBack);
-        const b2 = findButton(flat2, BTN.back);
-        if (b2) {
-          Utils.log(`${this.label} sau Trừ → Quay lại (msg khác): ${b2.text}`);
-          msg = await this.clickButton(withBack, b2.text, peer);
-          await sleep(900);
-        }
+      await sleep(1000);
+    }
+
+    // Có thể vẫn là chi tiết (tin edit) hoặc đã về list
+    let detail = await this.findDetailMessage(peer);
+    if (detail && (await this.messageHasTimeButton(detail))) {
+      const body = String(detail.message || detail.text || '');
+      if (this.detailMatchesItem(body, fields) || /tr[uừ]\s*ti[eề]n/i.test(body)) {
+        Utils.log(`${this.label} sau Quay lại vẫn ở chi tiết — sửa giờ tại đây`);
+        return { detail, body, page };
       }
     }
 
-    // Về list GD rồi mở lại đúng giao dịch để sửa giờ
-    msg = await this.ensureTxList(msg, peer);
+    // Về list → mở lại đúng GD mới nhất khớp
+    msg = detail || msg;
+    try {
+      msg = await this.ensureTxList(msg, peer);
+    } catch (_e) {
+      msg = (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer));
+    }
     const nav = await this.goToTxPage(msg, peer, page || 1);
     session.listMsg = nav.msg;
     session.lastMsg = nav.msg;
@@ -765,17 +783,29 @@ class Wf4Runner extends WfRunner {
     if (!info || !fields.amountDigits) return false;
     if (info.digits !== fields.amountDigits) return false;
     const raw = String(body || '');
-    if (fields.stk && raw.includes(fields.stk)) return true;
+    // Ưu tiên mã GD trong nội dung (STK trong /bdsd thường ≠ STK trên chi tiết)
     const needle = contentNeedle(fields.content);
     if (needle && raw.toLowerCase().includes(String(needle).toLowerCase())) {
       return true;
     }
     if (fields.content) {
-      const chunk = fields.content.replace(/^GD\s*:\s*/i, '').slice(0, 24);
+      const chunk = fields.content.replace(/^GD\s*:\s*/i, '').slice(0, 28);
       if (chunk && raw.toLowerCase().includes(chunk.toLowerCase())) return true;
     }
-    // Khớp đủ số tiền + (không có STK/needle để siết) → chấp nhận
-    return !fields.stk && !needle;
+    if (fields.stk && raw.includes(fields.stk)) return true;
+    // Chỉ khớp tiền khi không có mã để siết — tránh nhầm GD cùng số tiền
+    return !needle;
+  }
+
+  /** Giờ từ Nội dung chi tiết, fallback từ dòng /bdsd gốc. */
+  resolveContentTime(body, fields) {
+    return (
+      extractContentTime(body, false) ||
+      (fields?.content ? extractContentTime(fields.content, false) : null) ||
+      (fields?.content
+        ? extractContentTime(`Nội dung: ${fields.content}`, false)
+        : null)
+    );
   }
 
   async findAndOpenItemOnB(session, fields, controlChatId) {
@@ -985,7 +1015,16 @@ class Wf4Runner extends WfRunner {
           }
         }
 
-        const contentTime = extractContentTime(body, false);
+        // Đảm bảo đang ở màn chi tiết có nút giờ trước khi sửa
+        if (!(await this.messageHasTimeButton(detail))) {
+          const d2 = await this.findDetailMessage(peer);
+          if (d2) {
+            detail = d2;
+            body = String(detail.message || detail.text || '');
+          }
+        }
+
+        const contentTime = this.resolveContentTime(body, fields);
         const fieldTime = extractFieldTime(body, false);
         const rawField = extractFieldTimeRaw(body);
         if (!contentTime) {
@@ -1002,7 +1041,12 @@ class Wf4Runner extends WfRunner {
             replyTo
           );
         } else {
+          // Re-fetch detail ngay trước khi bấm Thời gian (tránh msg stale sau Trừ)
+          const fresh = await this.findDetailMessage(peer);
+          if (fresh) detail = fresh;
           detail = await this.editTimeOnDetail(detail, peer, contentTime);
+          await sleep(800);
+          detail = (await this.findDetailMessage(peer)) || detail;
           body = String(detail?.message || detail?.text || '');
           const rawAfter = extractFieldTimeRaw(body);
           const fieldAfter = extractFieldTime(body, false);
