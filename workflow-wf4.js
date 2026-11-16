@@ -362,7 +362,7 @@ class Wf4Runner extends WfRunner {
             '✅ WF4 vẫn **ON** — dán list/mục tiếp.',
             s.chosenAccount
               ? `TK B đang dùng: ${s.chosenAccount}`
-              : 'Lần đầu sau A sẽ hỏi chọn TK trên B.',
+              : 'Sau A bot tự tìm TK trên B theo SĐT (còn hạn → hết hạn).',
             'Tắt: `/wf4 off`',
           ].join('\n')
         );
@@ -1077,7 +1077,7 @@ class Wf4Runner extends WfRunner {
         `🏁 Pha A xong: gửi ${s.stats.sentA || 0}/${total} · lỗi ${s.stats.errors || 0}`,
         s.chosenAccount
           ? `➡️ Sang B (TK: ${s.chosenAccount})…`
-          : `➡️ Sang Bot B (\`${this.getBotB()}\`) — chọn TK…`,
+          : `➡️ Sang Bot B (\`${this.getBotB()}\`) — tự tìm TK theo SĐT…`,
       ].join('\n'),
       replyTo
     );
