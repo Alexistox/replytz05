@@ -308,7 +308,13 @@ class Wf4Runner extends WfRunner {
 
   isBusy(controlChatId) {
     const s = this.getSession(controlChatId);
-    return s && (s.phase === 'sending_a' || s.phase === 'editing_b');
+    return (
+      s &&
+      (s.phase === 'sending_a' ||
+        s.phase === 'editing_b' ||
+        s.phase === 'processing' ||
+        s.mode === 'annotated_list')
+    );
   }
 
   /** WF2 đang chiếm chat? */
@@ -436,7 +442,7 @@ class Wf4Runner extends WfRunner {
           '`/wf4 on` — bật, chờ dán list (chưa đụng B)',
           'List: `1. Cộng` / `2. Trừ` + `/bdsd …` (1 mục hoặc nhiều)',
           'Xong 1 batch vẫn ON — dán batch/mục tiếp; `/wf4 off` tắt',
-          '`/phab` — chạy lại **chỉ pha B** (list vừa rồi; hoặc dán list cùng lệnh)',
+          '`/phab` — chạy lại **chỉ pha B** (logic WF1 + /bdsd; không gửi A)',
           '`/wf4 status`',
           'Không chạy song song WF2 cùng chat.',
         ].join('\n')
@@ -601,7 +607,7 @@ class Wf4Runner extends WfRunner {
     await this.notify(
       chatId,
       [
-        `🔁 **/phab** — chỉ pha B (${items.length} mục: Cộng ${nCong} · Trừ ${nTru})`,
+        `🔁 **/phab** — chỉ pha B, logic WF1 + /bdsd (${items.length} mục: Cộng ${nCong} · Trừ ${nTru})`,
         `B=\`${this.getBotB()}\` — **không** gửi A.`,
         session.chosenAccount
           ? `TK: ${session.chosenAccount}`
@@ -610,16 +616,13 @@ class Wf4Runner extends WfRunner {
       messageId
     );
 
-    try {
-      if (session.chosenAccount && session.peer) {
-        await this.resumeEditOnB(chatId);
-      } else {
-        await this.runUntilAccountPick(chatId, messageId);
-      }
-    } catch (err) {
-      await this.notify(chatId, `❌ /phab lỗi mở B: ${err.message}`, messageId);
+    this.runAnnotatedListRepair(chatId, items, messageId, {
+      continuous: true,
+      sentA: 0,
+    }).catch(async (err) => {
+      await this.notify(chatId, `❌ /phab lỗi: ${err.message}`, messageId);
       await this.returnToAwaitList(chatId, null);
-    }
+    });
   }
 
   phonesFromSessionItems(session) {
@@ -1544,27 +1547,25 @@ class Wf4Runner extends WfRunner {
 
     s.totalSentA = (s.totalSentA || 0) + (s.stats.sentA || 0);
 
+    const sentA = s.stats.sentA || 0;
     await this.notify(
       controlChatId,
       [
-        `🏁 Pha A xong: gửi ${s.stats.sentA || 0}/${total} · lỗi ${s.stats.errors || 0}`,
-        s.chosenAccount
-          ? `➡️ Sang B (TK: ${s.chosenAccount})…`
-          : `➡️ Sang Bot B (\`${this.getBotB()}\`) — tự tìm TK theo SĐT…`,
+        `🏁 Pha A xong: gửi ${sentA}/${total} · lỗi ${s.stats.errors || 0}`,
+        `➡️ Pha B: logic WF1 + /bdsd trên \`${this.getBotB()}\`…`,
+        s.chosenAccount ? `TK: ${s.chosenAccount}` : 'Tự chọn TK theo SĐT (còn hạn → hết hạn).',
       ].join('\n'),
       replyTo
     );
 
-    try {
-      if (s.chosenAccount && s.peer) {
-        await this.resumeEditOnB(controlChatId);
-      } else {
-        await this.runUntilAccountPick(controlChatId, replyTo);
-      }
-    } catch (err) {
-      await this.notify(controlChatId, `❌ WF4 lỗi mở B: ${err.message}`, replyTo);
+    // Pha B = cùng logic WF1 sửa list (Trừ + giờ), bot B
+    this.runAnnotatedListRepair(controlChatId, s.items, replyTo, {
+      continuous: true,
+      sentA,
+    }).catch(async (err) => {
+      await this.notify(controlChatId, `❌ WF4 lỗi pha B: ${err.message}`, replyTo);
       await this.returnToAwaitList(controlChatId, null);
-    }
+    });
   }
 
   /** Pha 2: trên B — flip Trừ + sửa giờ (không gửi A nữa) */

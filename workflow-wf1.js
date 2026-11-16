@@ -2156,13 +2156,90 @@ class WfRunner {
     return null;
   }
 
-  /** /wf1 + list: tự chọn TK theo SĐT (còn hạn → hết hạn) rồi vào LSGD. */
+  /** /wf1 + list (và WF4 pha B): tự chọn TK theo SĐT (còn hạn → hết hạn) rồi vào LSGD. */
   async autoPickAccountByPhone(controlChatId, items, replyTo) {
     const phones = this.phonesFromItems(items);
     if (!phones.length) throw new Error('List không có SĐT để chọn tài khoản.');
+    const prev = this.getSession(controlChatId) || {};
+    const keep = {
+      peerA: prev.peerA,
+      totalSentA: prev.totalSentA || 0,
+      queuedText: prev.queuedText,
+      lastItems: prev.lastItems,
+      phabOnly: prev.phabOnly,
+    };
     const peerCfg = this.getBotPeerConfig();
     const peer = await this.resolvePeer(peerCfg);
+
+    // Giữ TK cũ nếu cùng SĐT (WF4 batch tiếp /phab)
+    if (
+      prev.chosenAccount &&
+      prev.peer &&
+      this.accountMatchesPhones(prev.chosenAccount, phones)
+    ) {
+      const session = {
+        ...prev,
+        ...keep,
+        phase: 'processing',
+        mode: 'annotated_list',
+        peerCfg,
+        peer: prev.peer || peer,
+        controlChatId: String(controlChatId),
+        replyTo,
+        items,
+        stats: {
+          fixed: 0,
+          skipped: 0,
+          errors: 0,
+          flipped: 0,
+          fixedTime: 0,
+          skippedFlip: 0,
+          skippedTime: 0,
+          sentA: prev.stats?.sentA || 0,
+        },
+        cancel: false,
+        chosenAccount: prev.chosenAccount,
+        chosenAccountFilter: prev.chosenAccountFilter,
+        accountButtons: prev.accountButtons,
+      };
+      this.sessions.set(String(controlChatId), session);
+      await this.notify(
+        controlChatId,
+        `♻️ Dùng lại TK: ${session.chosenAccount}`,
+        replyTo
+      );
+      try {
+        if (typeof this.openEditTxAfterAccount === 'function') {
+          const msg = await this.openEditTxAfterAccount(controlChatId);
+          session.listMsg = msg;
+          session.lastMsg = msg;
+        } else {
+          let msg =
+            session.listMsg ||
+            session.lastMsg ||
+            (await this.getLatestMessage(session.peer));
+          try {
+            msg = await this.ensureTxList(msg, session.peer);
+          } catch (_e) {
+            msg = await this.clickButton(msg, session.chosenAccount, session.peer);
+            const flat = await this.getButtons(msg);
+            if (findButton(flat, BTN.editTxMenu)) {
+              msg = await this.clickButton(msg, BTN.editTxMenu, session.peer);
+            }
+            msg = await this.clickButton(msg, BTN.editTx, session.peer);
+          }
+          session.listMsg = msg;
+          session.lastMsg = msg;
+        }
+        return session;
+      } catch (e) {
+        const Utils = require('./utils');
+        Utils.log(`${this.label} reuse TK fail: ${e.message} — chọn lại`);
+      }
+    }
+
     const session = {
+      ...keep,
       phase: 'processing',
       mode: 'annotated_list',
       peerCfg,
@@ -2170,7 +2247,16 @@ class WfRunner {
       controlChatId: String(controlChatId),
       replyTo,
       items,
-      stats: { fixed: 0, skipped: 0, errors: 0, flipped: 0, fixedTime: 0, skippedFlip: 0, skippedTime: 0 },
+      stats: {
+        fixed: 0,
+        skipped: 0,
+        errors: 0,
+        flipped: 0,
+        fixedTime: 0,
+        skippedFlip: 0,
+        skippedTime: 0,
+        sentA: prev.stats?.sentA || 0,
+      },
       cancel: false,
     };
     this.sessions.set(String(controlChatId), session);
@@ -2310,11 +2396,18 @@ class WfRunner {
     });
   }
 
-  async runAnnotatedListRepair(controlChatId, items, replyTo) {
+  /**
+   * Sửa theo list Cộng/Trừ + /bdsd (logic pha B).
+   * opts.continuous = true → WF4 giữ ON, gọi returnToAwaitList khi xong.
+   */
+  async runAnnotatedListRepair(controlChatId, items, replyTo, opts = {}) {
+    const continuous = opts.continuous === true;
+    const sentA = Number(opts.sentA || 0) || 0;
     const session = await this.autoPickAccountByPhone(controlChatId, items, replyTo);
     const { peer } = session;
     const total = items.length;
     const gapMs = 1500;
+    if (sentA) session.stats.sentA = sentA;
 
     for (let i = 0; i < items.length; i++) {
       const s = this.getSession(controlChatId);
@@ -2462,17 +2555,28 @@ class WfRunner {
 
     const done = this.getSession(controlChatId);
     const st = done?.stats || {};
+    const summary = [
+      `🏁 ${this.label} list xong (${total} mục).`,
+      continuous || sentA
+        ? `Gửi A (batch): ${st.sentA || sentA || 0}`
+        : null,
+      `Đổi Trừ: ${st.flipped || 0} (bỏ qua ${st.skippedFlip || 0})`,
+      `Sửa giờ: ${st.fixedTime || 0} (đã đúng ${st.skippedTime || 0})`,
+      `Lỗi: ${st.errors || 0}`,
+    ].filter(Boolean);
+
+    if (continuous && typeof this.returnToAwaitList === 'function') {
+      // Giữ lastItems + TK cho /phab / batch sau
+      if (done) {
+        done.lastItems = items.slice();
+        done.stats = { ...st };
+      }
+      await this.returnToAwaitList(controlChatId, summary);
+      return;
+    }
+
     this.clearSession(controlChatId);
-    await this.notify(
-      controlChatId,
-      [
-        `🏁 ${this.label} list xong (${total} mục).`,
-        `Đổi Trừ: ${st.flipped || 0} (bỏ qua ${st.skippedFlip || 0})`,
-        `Sửa giờ: ${st.fixedTime || 0} (đã đúng ${st.skippedTime || 0})`,
-        `Lỗi: ${st.errors || 0}`,
-      ].join('\n'),
-      replyTo
-    );
+    await this.notify(controlChatId, summary.join('\n'), replyTo);
   }
 }
 
