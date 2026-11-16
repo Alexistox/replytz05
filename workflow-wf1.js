@@ -516,7 +516,56 @@ class WfRunner {
     return flattenButtons(rows);
   }
 
+  /**
+   * Chờ tin có keyboard trước khi bấm (mọi WF1/WF3/WF4).
+   * BankAo hay chậm hoặc trả tin không nút sau /start.
+   */
+  async waitForMessageWithButtons(
+    peer,
+    { minButtons = 1, timeoutMs = 12000, preferMsg = null } = {}
+  ) {
+    const deadline = Date.now() + timeoutMs;
+    let lastWithAny = null;
+    while (Date.now() < deadline) {
+      if (preferMsg) {
+        const flatP = await this.getButtons(preferMsg);
+        if (flatP.length >= minButtons) return preferMsg;
+      }
+      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      for (const m of msgs || []) {
+        if (!m) continue;
+        const flat = await this.getButtons(m);
+        if (flat.length >= minButtons) return m;
+        if (flat.length) lastWithAny = m;
+      }
+      await sleep(600);
+    }
+    return lastWithAny || preferMsg || (await this.getLatestMessage(peer));
+  }
+
+  /** Đảm bảo msg đang có đủ nút; không thì lấy tin keyboard mới nhất. */
+  async ensureButtons(msg, peer, { minButtons = 1, timeoutMs = 10000 } = {}) {
+    const flat = await this.getButtons(msg);
+    if (flat.length >= minButtons) return msg;
+    if (!peer) return msg;
+    const Utils = require('./utils');
+    Utils.log(
+      `${this.label} chờ keyboard (≥${minButtons}) — hiện ${flat.length || 0} nút`
+    );
+    return (
+      (await this.waitForMessageWithButtons(peer, {
+        minButtons,
+        timeoutMs,
+        preferMsg: msg,
+      })) || msg
+    );
+  }
+
   async clickButton(msg, target, peer) {
+    // Luôn chờ keyboard trước khi bấm
+    const need =
+      typeof target === 'number' ? Math.max(1, target + 1) : 1;
+    msg = await this.ensureButtons(msg, peer, { minButtons: need });
     const flat = await this.getButtons(msg);
     const btn = findButton(flat, target);
     if (!btn) {
@@ -528,9 +577,23 @@ class WfRunner {
 
   /** Bấm đúng ô (row/col) — dùng khi nhiều GD trùng tên trên list. */
   async clickAt(msg, row, col, peer) {
+    // Đảm bảo đúng msg còn keyboard trước khi click tọa độ
+    if (peer) {
+      const flat = await this.getButtons(msg);
+      if (!flat.length) {
+        msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
+      }
+    }
     await msg.click({ i: row, j: col });
     await sleep(1800);
-    return this.getLatestMessage(peer);
+    if (!peer) return null;
+    // Sau bấm: ưu tiên tin có keyboard mới; không có thì latest (vd prompt nhập giờ)
+    return (
+      (await this.waitForMessageWithButtons(peer, {
+        minButtons: 1,
+        timeoutMs: 4500,
+      })) || (await this.getLatestMessage(peer))
+    );
   }
 
   async clickIndex(msg, index, peer) {
@@ -682,14 +745,28 @@ class WfRunner {
 
     await this.notify(controlChatId, `📤 Gửi /start tới ${peerCfg}…`, replyTo);
     await this.bot.client.sendMessage(peer, { message: '/start' });
-    await sleep(2000);
-    let msg = await this.getLatestMessage(peer);
-    if (!msg) throw new Error('Không nhận được tin từ bot sau /start');
+    await sleep(1200);
+    let msg = await this.waitForMessageWithButtons(peer, {
+      minButtons: 1,
+      timeoutMs: 15000,
+    });
+    if (!msg || !(await this.getButtons(msg)).length) {
+      await this.bot.client.sendMessage(peer, { message: '/start' });
+      await sleep(1500);
+      msg = await this.waitForMessageWithButtons(peer, {
+        minButtons: 1,
+        timeoutMs: 12000,
+      });
+    }
+    if (!msg || !(await this.getButtons(msg)).length) {
+      throw new Error('Không nhận được keyboard từ bot sau /start');
+    }
 
     await this.notify(controlChatId, '👆 Bấm button đầu tiên…', replyTo);
     msg = await this.clickIndex(msg, 0, peer);
 
     await this.notify(controlChatId, '👆 Bấm button thứ 2…', replyTo);
+    msg = await this.ensureButtons(msg, peer, { minButtons: 2 });
     msg = await this.clickIndex(msg, 1, peer);
 
     const flatFilters = await this.getButtons(msg);
@@ -1970,41 +2047,26 @@ class WfRunner {
       replyTo
     );
     await this.bot.client.sendMessage(peer, { message: '/start' });
-    await sleep(1500);
-    let msg = null;
-    for (let t = 0; t < 15; t++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 10 });
-      for (const m of msgs || []) {
-        const flat = await this.getButtons(m);
-        if (flat.length >= 1) {
-          msg = m;
-          break;
-        }
-      }
-      if (msg) break;
-      await sleep(700);
+    await sleep(1200);
+    let msg = await this.waitForMessageWithButtons(peer, {
+      minButtons: 1,
+      timeoutMs: 15000,
+    });
+    if (!msg || !(await this.getButtons(msg)).length) {
+      await this.bot.client.sendMessage(peer, { message: '/start' });
+      await sleep(1500);
+      msg = await this.waitForMessageWithButtons(peer, {
+        minButtons: 1,
+        timeoutMs: 12000,
+      });
     }
-    if (!msg) throw new Error('Không nhận được tin/button từ bot sau /start');
+    if (!msg || !(await this.getButtons(msg)).length) {
+      throw new Error('Không nhận được tin/button từ bot sau /start');
+    }
     msg = await this.clickIndex(msg, 0, peer);
-    await sleep(800);
-    {
-      let ready = null;
-      for (let t = 0; t < 10; t++) {
-        const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
-        for (const m of msgs || []) {
-          const flat = await this.getButtons(m);
-          if (flat.length >= 2) {
-            ready = m;
-            break;
-          }
-        }
-        if (ready) break;
-        await sleep(600);
-      }
-      msg = ready || (await this.getLatestMessage(peer)) || msg;
-    }
-    msg = await this.clickIndex(msg, Math.min(1, (await this.getButtons(msg)).length - 1), peer);
-    await sleep(800);
+    msg = await this.ensureButtons(msg, peer, { minButtons: 2 });
+    msg = await this.clickIndex(msg, 1, peer);
+    msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
 
     const flatFilters = await this.getButtons(msg);
     const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));

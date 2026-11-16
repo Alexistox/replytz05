@@ -644,23 +644,6 @@ class Wf4Runner extends WfRunner {
     return phones.some((p) => p && t.includes(p));
   }
 
-  /** Chờ tin có keyboard (sau /start BankAo hay chậm / stale sau WF1). */
-  async waitForMessageWithButtons(peer, { minButtons = 1, timeoutMs = 12000 } = {}) {
-    const deadline = Date.now() + timeoutMs;
-    let last = null;
-    while (Date.now() < deadline) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 10 });
-      for (const m of msgs || []) {
-        if (!m) continue;
-        const flat = await this.getButtons(m);
-        if (flat.length >= minButtons) return m;
-        if (flat.length) last = m;
-      }
-      await sleep(700);
-    }
-    return last || (await this.getLatestMessage(peer));
-  }
-
   /**
    * Mở B, tự chọn còn hạn → tìm TK cùng SĐT;
    * không thấy → Quay lại → hết hạn → tìm tiếp.
@@ -744,25 +727,20 @@ class Wf4Runner extends WfRunner {
     }
 
     await this.bot.client.sendMessage(peer, { message: '/start' });
-    await sleep(1500);
-    // BankAo sau WF1 có thể gửi tin không keyboard trước — chờ nút
+    await sleep(1200);
     let msg = await this.waitForMessageWithButtons(peer, {
       minButtons: 1,
       timeoutMs: 15000,
     });
-    if (!msg) throw new Error('Không nhận được tin từ bot sau /start');
-    let flat0 = await this.getButtons(msg);
-    if (!flat0.length) {
-      // Thử /start lần 2
+    if (!msg || !(await this.getButtons(msg)).length) {
       await this.bot.client.sendMessage(peer, { message: '/start' });
-      await sleep(2000);
+      await sleep(1500);
       msg = await this.waitForMessageWithButtons(peer, {
         minButtons: 1,
         timeoutMs: 12000,
       });
-      flat0 = await this.getButtons(msg);
     }
-    if (!flat0.length) {
+    if (!msg || !(await this.getButtons(msg)).length) {
       throw new Error(
         'Sau /start bot B không có button (keyboard trống). Thử /wf4 lại hoặc mở bot B tay một lần.'
       );
@@ -770,24 +748,10 @@ class Wf4Runner extends WfRunner {
 
     await this.notify(controlChatId, '👆 Bấm button đầu tiên…', saved.replyTo);
     msg = await this.clickIndex(msg, 0, peer);
-    msg =
-      (await this.waitForMessageWithButtons(peer, { minButtons: 1, timeoutMs: 8000 })) ||
-      msg;
     await this.notify(controlChatId, '👆 Bấm button thứ 2…', saved.replyTo);
-    {
-      const flat = await this.getButtons(msg);
-      if (flat.length < 2) {
-        msg =
-          (await this.waitForMessageWithButtons(peer, {
-            minButtons: 2,
-            timeoutMs: 8000,
-          })) || msg;
-      }
-      msg = await this.clickIndex(msg, Math.min(1, (await this.getButtons(msg)).length - 1), peer);
-    }
-    msg =
-      (await this.waitForMessageWithButtons(peer, { minButtons: 1, timeoutMs: 8000 })) ||
-      msg;
+    msg = await this.ensureButtons(msg, peer, { minButtons: 2 });
+    msg = await this.clickIndex(msg, 1, peer);
+    msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
 
     const flatFilters = await this.getButtons(msg);
     const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
