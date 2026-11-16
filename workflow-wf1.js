@@ -1952,57 +1952,55 @@ class WfRunner {
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    // BankAo chậm hơn các bước khác: phải chờ thông báo + Quay lại mới commit giờ
+    // BankAo: sau nhập giờ → bấm Quay lại tin MỚI NHẤT → rồi mới xác nhận Thời gian
     await sleep(500);
 
-    // Tin thông báo sau nhập giờ (có Quay lại) — không bấm Quay lại trên màn chi tiết cũ
-    let notifyWithBack = null;
+    let newestWithBack = null;
     for (let i = 0; i < 12; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 10 });
+      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      let best = null;
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
         const flatM = await this.getButtons(m);
         const back = findButton(flatM, BTN.back) || findButton(flatM, BTN.backLoose);
         if (!back) continue;
-        const bodyM = String(m.message || m.text || '');
-        const isDetail = /S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(bodyM);
-        if (isDetail) {
-          const rawOn = extractFieldTimeRaw(bodyM);
-          // Chi tiết đã có giờ mới → khỏi cần Quay lại thông báo
-          if (rawOn && fieldMatchesTarget(rawOn, extractFieldTime(`Thời gian: ${rawOn}`, this.keepSeconds), newTime, this.keepSeconds)) {
-            Utils.log(`${this.label} sau nhập giờ → chi tiết đã cập nhật #${m.id}`);
-            return m;
-          }
-          continue; // bỏ qua màn chi tiết cũ / chưa commit
-        }
-        notifyWithBack = m;
+        if (!best || m.id > best.id) best = m;
+      }
+      if (best) {
+        newestWithBack = best;
         break;
       }
-      if (notifyWithBack) break;
       await sleep(400);
     }
 
-    if (!notifyWithBack) {
+    if (!newestWithBack) {
       throw new Error(
-        'Sau nhập giờ không thấy tin thông báo có Quay lại — không commit được thời gian'
+        'Sau nhập giờ không thấy tin mới có Quay lại — chưa commit thời gian'
       );
     }
 
     {
-      const flatN = await this.getButtons(notifyWithBack);
+      const flatN = await this.getButtons(newestWithBack);
       const backBtn = findButton(flatN, BTN.back) || findButton(flatN, BTN.backLoose);
       Utils.log(
-        `${this.label} sau nhập giờ → Quay lại tin mới #${notifyWithBack.id}: ${backBtn.text}`
+        `${this.label} sau nhập giờ → Quay lại tin mới nhất #${newestWithBack.id}: ${backBtn.text}`
       );
-      await this.clickAt(notifyWithBack, backBtn.row, backBtn.col, peer);
+      await this.clickAt(newestWithBack, backBtn.row, backBtn.col, peer);
       await sleep(700);
     }
 
+    // Chỉ xác nhận thành công SAU khi đã Quay lại
     const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
       beforeId,
       oldTime,
     });
-    if (updated) return updated;
+    if (updated) {
+      const rawOk = extractFieldTimeRaw(String(updated.message || updated.text || ''));
+      Utils.log(
+        `${this.label} xác nhận sau Quay lại: Thời gian=${rawOk || '?'} (cần ${newTime})`
+      );
+      return updated;
+    }
 
     for (let i = 0; i < 6; i++) {
       const latest = await this.getLatestMessage(peer);
@@ -2013,7 +2011,7 @@ class WfRunner {
         const field = extractFieldTime(body, this.keepSeconds);
         if (fieldMatchesTarget(raw, field, newTime, this.keepSeconds)) return latest;
         if (field && oldTime && field !== oldTime) return latest;
-        if (raw) return latest; // đã có giờ sau Quay lại — caller sẽ so khớp
+        if (raw) return latest;
       }
       await sleep(400);
     }
