@@ -814,6 +814,67 @@ class WfRunner {
     return false;
   }
 
+  /** Parse "Edit LSGD - Trang 1/2" → { page, total } hoặc null. */
+  parseLsgdPage(msg) {
+    const body = String(msg?.message || msg?.text || '');
+    const m = body.match(/Trang\s*(\d+)\s*\/\s*(\d+)/i);
+    if (!m) return null;
+    return { page: parseInt(m[1], 10), total: parseInt(m[2], 10) };
+  }
+
+  /**
+   * Sau Quay lại bot luôn về trang 1 — nhảy lại trang target bằng Sau/Trước.
+   * @returns {{ msg: object, page: number, total: number|null }}
+   */
+  async goToTxPage(msg, peer, targetPage) {
+    const Utils = require('./utils');
+    const target = Math.max(1, Number(targetPage) || 1);
+    msg = await this.ensureTxList(msg, peer);
+
+    for (let guard = 0; guard < 25; guard++) {
+      const info = this.parseLsgdPage(msg);
+      const cur = info?.page || 1;
+      const total = info?.total || null;
+      if (cur === target) {
+        return { msg, page: cur, total };
+      }
+      if (total != null && target > total) {
+        return { msg, page: cur, total };
+      }
+
+      const flat = await this.getButtons(msg);
+      if (cur < target) {
+        const next = findButton(flat, BTN.nextPage);
+        if (!next) {
+          Utils.log(`${this.label} goToTxPage: hết nút Sau tại trang ${cur} (cần ${target})`);
+          return { msg, page: cur, total };
+        }
+        msg = await this.clickButton(msg, next.text, peer);
+        await sleep(700);
+        msg = (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer)) || msg;
+        const after = this.parseLsgdPage(msg);
+        if (after && after.page <= cur) {
+          Utils.log(
+            `${this.label} goToTxPage: Sau không tăng trang (${cur}→${after.page}) — dừng`
+          );
+          return { msg, page: after.page, total: after.total };
+        }
+        continue;
+      }
+
+      const prev = findButton(flat, BTN.prevPage);
+      if (!prev) {
+        return { msg, page: cur, total };
+      }
+      msg = await this.clickButton(msg, prev.text, peer);
+      await sleep(700);
+      msg = (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer)) || msg;
+    }
+
+    const info = this.parseLsgdPage(msg);
+    return { msg, page: info?.page || 1, total: info?.total || null };
+  }
+
   /** Đảm bảo đang ở màn list GD (Edit LSGD). Nếu lệch ra menu cha thì bấm lại Chỉnh Giao Dịch. */
   async ensureTxList(msg, peer) {
     const Utils = require('./utils');
@@ -997,23 +1058,55 @@ class WfRunner {
       msg = await this.goToFirstTxPage(msg, peer);
       msg = await this.ensureTxList(msg, peer);
 
-      for (let page = 1; page <= maxPagesPerSweep; page++) {
+      let page = 1;
+      let knownTotal = this.parseLsgdPage(msg)?.total || null;
+
+      for (let pageGuardOuter = 0; pageGuardOuter < maxPagesPerSweep; pageGuardOuter++) {
         if (!this.getSession(controlChatId)) return;
-        msg = await this.ensureTxList(msg, peer);
+
+        // Luôn đứng đúng trang target (Quay lại từ chi tiết → về trang 1)
+        {
+          const nav = await this.goToTxPage(msg, peer, page);
+          msg = nav.msg;
+          page = nav.page || page;
+          if (nav.total) knownTotal = nav.total;
+        }
+
+        await this.notify(
+          controlChatId,
+          `📄 Trang ${page}${knownTotal ? `/${knownTotal}` : ''}`,
+          replyTo
+        );
 
         /** Vị trí nút đã thử trên trang hiện tại (list đổi sau edit → clear). */
         const seenPos = new Set();
         let pageGuard = 0;
+
         while (pageGuard < 40) {
           pageGuard += 1;
           if (!this.getSession(controlChatId)) return;
+
+          // Phục hồi trang nếu Quay lại đẩy về 1
+          {
+            const curInfo = this.parseLsgdPage(msg);
+            if (curInfo && curInfo.page !== page) {
+              const nav = await this.goToTxPage(msg, peer, page);
+              msg = nav.msg;
+              if (nav.total) knownTotal = nav.total;
+            }
+          }
 
           msg = (await this.getLatestMessage(peer)) || msg;
           let flat = await this.getButtons(msg);
           if (!this.isTxListScreen(msg, flat)) {
             msg = await this.ensureTxList(msg, peer);
             flat = await this.getButtons(msg);
+            const nav = await this.goToTxPage(msg, peer, page);
+            msg = nav.msg;
+            flat = await this.getButtons(msg);
+            if (nav.total) knownTotal = nav.total;
           }
+
           const txButtons = flat.filter((b) =>
             this.isLikelyTransactionButton(b.text)
           );
@@ -1042,6 +1135,15 @@ class WfRunner {
           );
           let body = String(detail?.message || detail?.text || '');
 
+          const backToPage = async (detailMsg, afterEdit) => {
+            let listMsg = await this.returnToTransactionList(detailMsg, peer, {
+              afterEdit,
+            });
+            const nav = await this.goToTxPage(listMsg, peer, page);
+            if (nav.total) knownTotal = nav.total;
+            return nav.msg;
+          };
+
           // Stale / nhầm GD (trùng tên trên list) — không đánh dấu done
           if (!detailMatchesLabel(label, body)) {
             await this.notify(
@@ -1049,9 +1151,7 @@ class WfRunner {
               `⚠️ Mở lệch GD (nút \`${label.slice(0, 40)}\` ≠ chi tiết) — thử lại.`,
               replyTo
             );
-            msg = await this.returnToTransactionList(detail, peer, {
-              afterEdit: false,
-            });
+            msg = await backToPage(detail, false);
             continue;
           }
 
@@ -1066,9 +1166,7 @@ class WfRunner {
               `⏭️ Đã xử lý (${txKey}) — bỏ qua.`,
               replyTo
             );
-            msg = await this.returnToTransactionList(detail, peer, {
-              afterEdit: false,
-            });
+            msg = await backToPage(detail, false);
             continue;
           }
 
@@ -1080,9 +1178,7 @@ class WfRunner {
               `⚠️ Không parse được thời gian Nội dung — bỏ qua.\n${body.slice(0, 350)}`,
               replyTo
             );
-            msg = await this.returnToTransactionList(detail, peer, {
-              afterEdit: false,
-            });
+            msg = await backToPage(detail, false);
             continue;
           }
 
@@ -1094,9 +1190,7 @@ class WfRunner {
               `⏭️ Đã đúng (${contentTime}) — bỏ qua.`,
               replyTo
             );
-            msg = await this.returnToTransactionList(detail, peer, {
-              afterEdit: false,
-            });
+            msg = await backToPage(detail, false);
             continue;
           }
 
@@ -1114,7 +1208,6 @@ class WfRunner {
           try {
             detail = await this.editTimeOnDetail(detail, peer, contentTime);
             body = String(detail?.message || detail?.text || '');
-            // Đảm bảo đang ở đúng GD vừa sửa
             if (!detailMatchesLabel(label, body)) {
               const withBack = await this.findMessageWithBack(peer);
               if (withBack) {
@@ -1139,52 +1232,65 @@ class WfRunner {
             session.stats.fixed += 1;
             fixedThisSweep += 1;
             if (txKey) doneKeys.add(txKey);
-            // List sắp xếp lại — reset vị trí đã thử trên trang
             seenPos.clear();
             await this.notify(
               controlChatId,
-              `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed})\n↩️ Quay lại → chờ bảng → Quay lại…`,
+              `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed})\n↩️ Quay lại → về trang ${page}…`,
               replyTo
             );
-            msg = await this.returnToTransactionList(detail, peer, {
-              afterEdit: true,
-            });
+            msg = await backToPage(detail, true);
           } catch (e) {
             session.stats.errors += 1;
-            // Không doneKeys — để vòng sau còn thử lại
             await this.notify(
               controlChatId,
               `⚠️ Không chỉnh được: ${e.message}`,
               replyTo
             );
-            msg = await this.returnToTransactionList(detail, peer, {
-              afterEdit: false,
-            });
+            msg = await backToPage(detail, false);
           }
         }
 
+        // Hết nút trên trang → sang trang kế (nếu còn)
         msg = await this.ensureTxList(msg, peer);
-        let flat = await this.getButtons(msg);
-        let nextBtn = findButton(flat, BTN.nextPage);
-        if (!nextBtn) {
-          const listMsgFound = await this.findTxListMessage(peer);
-          if (listMsgFound) {
-            msg = listMsgFound;
-            flat = await this.getButtons(msg);
-            nextBtn = findButton(flat, BTN.nextPage);
-          }
+        {
+          const nav = await this.goToTxPage(msg, peer, page);
+          msg = nav.msg;
+          if (nav.total) knownTotal = nav.total;
         }
-        if (nextBtn) {
+
+        if (knownTotal != null && page >= knownTotal) {
+          break;
+        }
+
+        const flat = await this.getButtons(msg);
+        const nextBtn = findButton(flat, BTN.nextPage);
+        if (!nextBtn) {
+          break;
+        }
+
+        const beforePage = this.parseLsgdPage(msg)?.page || page;
+        await this.notify(
+          controlChatId,
+          `👉 Trang sau (${beforePage} → ${beforePage + 1})`,
+          replyTo
+        );
+        msg = await this.clickButton(msg, nextBtn.text, peer);
+        await sleep(800);
+        msg =
+          (await this.findTxListMessage(peer)) ||
+          (await this.getLatestMessage(peer)) ||
+          msg;
+        const afterInfo = this.parseLsgdPage(msg);
+        if (afterInfo?.total) knownTotal = afterInfo.total;
+        if (!afterInfo || afterInfo.page <= beforePage) {
           await this.notify(
             controlChatId,
-            `👉 Trang sau: ${nextBtn.text}`,
+            `✨ Không sang được trang mới — dừng phân trang.`,
             replyTo
           );
-          msg = await this.clickButton(msg, nextBtn.text, peer);
-          await sleep(1000);
-          continue;
+          break;
         }
-        break;
+        page = afterInfo.page;
       }
 
       // DỪNG khi vòng này không sửa gì (mọi GD mở ra đều đã đúng / đã xử lý)
