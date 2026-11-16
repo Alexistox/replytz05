@@ -40,14 +40,19 @@ const BTN = {
 
 /**
  * Formats trong Nội dung / Thời gian:
- * - Compact: 151126-18:34:26 → DDMMYY + giờ
+ * - Compact 8: 13112026-22:08:11 → DDMMYYYY + giờ (ưu tiên — tránh khớp nhầm 6 số)
+ * - Compact 6: 151126-18:34:26 → DDMMYY + giờ
  * - WF1: 15/11/2026 18:34 (bỏ giây)
  * - WF3: 15/11/2026 18:34:26 (giữ giây)
  */
 const DT_SLASH_RE =
   /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})[,\s]+(\d{1,2}:\d{2}(?::\d{2})?)/;
-/** DDMMYY-HH:mm[:ss] ví dụ 151126-18:34:26 */
-const DT_COMPACT_RE = /(\d{2})(\d{2})(\d{2})-(\d{1,2}:\d{2}(?::\d{2})?)/;
+/** DDMMYYYY-HH:mm[:ss] ví dụ 13112026-22:08:11 */
+const DT_COMPACT_Y4_RE =
+  /(?<!\d)(\d{2})(\d{2})(\d{4})[-–—](\d{1,2}:\d{2}(?::\d{2})?)/;
+/** DDMMYY-HH:mm[:ss] ví dụ 151126-18:34:26 — không khớp giữa chuỗi 8 số */
+const DT_COMPACT_RE =
+  /(?<!\d)(\d{2})(\d{2})(\d{2})[-–—](\d{1,2}:\d{2}(?::\d{2})?)/;
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -55,7 +60,13 @@ function pad2(n) {
 
 /** Chuẩn hóa để so sánh / gửi chỉnh sửa */
 function formatEditTime(day, month, year, hh, mm, ss = 0, keepSeconds = false) {
-  const base = `${pad2(day)}/${pad2(month)}/${year} ${pad2(hh)}:${pad2(mm)}`;
+  const d = Number(day);
+  const m = Number(month);
+  if (!Number.isFinite(d) || !Number.isFinite(m) || m < 1 || m > 12 || d < 1 || d > 31) {
+    return null;
+  }
+  const y = String(year).length === 2 ? `20${year}` : String(year);
+  const base = `${pad2(d)}/${pad2(m)}/${y} ${pad2(hh)}:${pad2(mm)}`;
   if (keepSeconds) return `${base}:${pad2(ss != null ? ss : 0)}`;
   return base;
 }
@@ -93,20 +104,39 @@ function parseSlashDateTime(datePart, timePart, keepSeconds = false) {
   return formatEditTime(day, month, year, t.hh, t.mm, t.ss, keepSeconds);
 }
 
-/** 151126-18:34:26 → 15/11/2026 18:34 hoặc 18:34:26 */
+/** 151126-… hoặc 13112026-… → DD/MM/YYYY HH:MM[:SS] */
 function parseCompactDateTime(match, keepSeconds = false) {
   const day = parseInt(match[1], 10);
   const month = parseInt(match[2], 10);
-  const yy = match[3];
-  const year = yy.length === 2 ? `20${yy}` : yy;
+  const yearPart = match[3];
+  const year =
+    String(yearPart).length === 4
+      ? String(yearPart)
+      : String(yearPart).length === 2
+        ? `20${yearPart}`
+        : yearPart;
   const t = parseTimePart(match[4]);
   return formatEditTime(day, month, year, t.hh, t.mm, t.ss, keepSeconds);
 }
 
+function firstValidCompact(raw, keepSeconds = false) {
+  const text = String(raw || '');
+  // Ưu tiên 8 số (DDMMYYYY) — nếu lấy 6 số trên 13112026 sẽ ra 112026 → 11/20 sai
+  for (const m of text.matchAll(new RegExp(DT_COMPACT_Y4_RE.source, 'g'))) {
+    const parsed = parseCompactDateTime(m, keepSeconds);
+    if (parsed) return parsed;
+  }
+  for (const m of text.matchAll(new RegExp(DT_COMPACT_RE.source, 'g'))) {
+    const parsed = parseCompactDateTime(m, keepSeconds);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
 function parseAnyDateTimeInChunk(chunk, keepSeconds = false) {
   const raw = String(chunk || '');
-  const compact = raw.match(DT_COMPACT_RE);
-  if (compact) return parseCompactDateTime(compact, keepSeconds);
+  const compact = firstValidCompact(raw, keepSeconds);
+  if (compact) return compact;
   const slash = raw.match(DT_SLASH_RE);
   if (slash) return parseSlashDateTime(slash[1], slash[2], keepSeconds);
   return null;
@@ -122,11 +152,12 @@ function extractDateTimeFromText(text, labelRe, keepSeconds = false) {
       if (parsed) return parsed;
     }
   }
-  const compactAll = [...raw.matchAll(new RegExp(DT_COMPACT_RE.source, 'g'))];
-  if (compactAll.length) return parseCompactDateTime(compactAll[0], keepSeconds);
+  const compact = firstValidCompact(raw, keepSeconds);
+  if (compact) return compact;
   const slashAll = [...raw.matchAll(new RegExp(DT_SLASH_RE.source, 'g'))];
-  if (slashAll.length) {
-    return parseSlashDateTime(slashAll[0][1], slashAll[0][2], keepSeconds);
+  for (const s of slashAll) {
+    const parsed = parseSlashDateTime(s[1], s[2], keepSeconds);
+    if (parsed) return parsed;
   }
   return null;
 }
