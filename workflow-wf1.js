@@ -1386,11 +1386,18 @@ class WfRunner {
 module.exports = {
   WfRunner,
   Wf1Runner: WfRunner, // alias
+  BTN,
   extractContentTime,
   extractFieldTime,
   extractFieldTimeRaw,
   fieldTimeHasSeconds,
   shouldSkipTimeEdit,
+  fieldMatchesTarget,
+  labelAmountInfo,
+  bodyAmountInfo,
+  detailMatchesLabel,
   formatEditTime,
   parseAnyDateTimeInChunk,
+  findButton,
+  flattenButtons,
 };

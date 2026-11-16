@@ -50,3 +50,28 @@ rồi dán list ở tin tiếp theo; hoặc `/wf2` + list trong cùng một tin.
 Userbot gửi **từng** `/bdsd` lên bot WF2, chờ reply rồi mới gửi dòng kế.
 
 Hủy: `/wf2 off`
+
+## WF4 — gửi `/bdsd` lên bot A, chỉnh trên bot B
+
+Bot tạo GD qua `/bdsd` luôn ra **Cộng**. WF4: gửi từng lệnh lên **A**, rồi trên **B** sửa thời gian (như WF1, không giây). Dòng nhãn **Trừ** thêm bước đổi Cộng → Trừ.
+
+```text
+/wf4bot @BotTaoBdsd @BankAoGiaRe_Bot
+/wf4 on
+```
+
+Chọn còn hạn/hết hạn + tài khoản trên bot B, rồi dán:
+
+```text
+1. Cộng
+/bdsd 0363392845 Abc112112@ VU VAN LONG 28733921 2800000 GD: TRAN VAN MINH chuyen tien GD 6319A2KD7QXN3MWE 141126-08:12:33
+2. Trừ
+/bdsd 0363392845 Abc112112@ DO DUY NHUAN 26754321 1500000 GD: IB VU VAN LONG CHUYEN KHOAN GD 6319H5PZ9WL4T8RC 141126-10:45:18
+```
+
+- Dòng **Cộng**: gửi A + sửa giờ trên B (không đổi loại).
+- Dòng **Trừ**: gửi A + đổi Trừ trên B + sửa giờ.
+
+**Không** chạy WF2 và WF4 cùng một chat — `/wf2 off` trước khi `/wf4 on` (và ngược lại).
+
+Hủy: `/wf4 off`
