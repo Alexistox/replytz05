@@ -1206,17 +1206,41 @@ class WfRunner {
             replyTo
           );
           try {
+            const beforeEditId = detail?.id || 0;
+            const oldTime =
+              this.extractFieldTime(String(detail?.message || detail?.text || '')) ||
+              extractFieldTimeRaw(String(detail?.message || detail?.text || '')) ||
+              null;
             detail = await this.editTimeOnDetail(detail, peer, contentTime);
             body = String(detail?.message || detail?.text || '');
+            let rawAfter = extractFieldTimeRaw(body);
+            let fieldAfter = this.extractFieldTime(body);
+            if (
+              !fieldMatchesTarget(
+                rawAfter,
+                fieldAfter,
+                contentTime,
+                this.keepSeconds
+              )
+            ) {
+              detail =
+                (await this.waitForUpdatedDetailTime(peer, contentTime, {
+                  beforeId: beforeEditId,
+                  oldTime,
+                })) || detail;
+              body = String(detail?.message || detail?.text || '');
+              rawAfter = extractFieldTimeRaw(body);
+              fieldAfter = this.extractFieldTime(body);
+            }
             if (!detailMatchesLabel(label, body)) {
               const withBack = await this.findMessageWithBack(peer);
               if (withBack) {
                 detail = withBack;
                 body = String(detail?.message || detail?.text || '');
+                rawAfter = extractFieldTimeRaw(body);
+                fieldAfter = this.extractFieldTime(body);
               }
             }
-            const rawAfter = extractFieldTimeRaw(body);
-            const fieldAfter = this.extractFieldTime(body);
             if (
               !fieldMatchesTarget(
                 rawAfter,
@@ -1334,8 +1358,56 @@ class WfRunner {
     return this.returnToTransactionList(msg, peer, { afterEdit: false });
   }
 
+  /**
+   * Chờ tin chi tiết mới sau khi Quay lại commit giờ (BankAo cập nhật Thời gian).
+   */
+  async waitForUpdatedDetailTime(peer, targetTime, { beforeId = 0, oldTime = null } = {}) {
+    const Utils = require('./utils');
+    let lastSeen = null;
+    for (let i = 0; i < 10; i++) {
+      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      for (const m of msgs || []) {
+        if (!m || (beforeId && m.id <= beforeId)) continue;
+        const body = String(m.message || m.text || '');
+        if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
+        const flat = await this.getButtons(m);
+        if (!findButton(flat, BTN.back)) continue;
+        const raw = extractFieldTimeRaw(body);
+        if (!raw) continue;
+        const field = extractFieldTime(`Thời gian: ${raw}`, this.keepSeconds);
+        lastSeen = m;
+        if (fieldMatchesTarget(raw, field, targetTime, this.keepSeconds)) {
+          Utils.log(
+            `${this.label} chi tiết mới #${m.id}: Thời gian=${raw || field} (đúng ${targetTime})`
+          );
+          return m;
+        }
+        if (
+          oldTime &&
+          field &&
+          field !== oldTime &&
+          String(field).replace(/:\d{2}$/, '') ===
+            String(targetTime).replace(/:\d{2}$/, '')
+        ) {
+          return m;
+        }
+      }
+      await sleep(700);
+    }
+    return lastSeen;
+  }
+
+  /**
+   * Nhập giờ → chờ thông báo có Quay lại → bấm Quay lại tin mới nhất để commit → lấy chi tiết đã cập nhật.
+   */
   async editTimeOnDetail(detailMsg, peer, newTime) {
     let msg = detailMsg;
+    const beforeId = detailMsg?.id || 0;
+    const oldBody = String(detailMsg?.message || detailMsg?.text || '');
+    const oldTime =
+      extractFieldTime(oldBody, this.keepSeconds) ||
+      extractFieldTimeRaw(oldBody) ||
+      null;
     const flat = await this.getButtons(msg);
     const labels = flat.map((b) => b.text);
     const Utils = require('./utils');
@@ -1362,24 +1434,53 @@ class WfRunner {
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(1500);
+    await sleep(1000);
 
-    // Lấy tin mới nhất có Quay lại (màn chi tiết), bỏ qua tin "Nhập giá trị…" không keyboard
+    // Thông báo sau nhập giờ → Quay lại tin mới nhất để commit (giống WF4)
+    let newestWithBack = null;
+    for (let i = 0; i < 10; i++) {
+      const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+      for (const m of msgs || []) {
+        if (!m || (beforeId && m.id <= beforeId)) continue;
+        const flatM = await this.getButtons(m);
+        const back = findButton(flatM, BTN.back) || findButton(flatM, BTN.backLoose);
+        if (!back) continue;
+        newestWithBack = m;
+        break;
+      }
+      if (newestWithBack) break;
+      await sleep(600);
+    }
+
+    if (newestWithBack) {
+      const flatN = await this.getButtons(newestWithBack);
+      const backBtn = findButton(flatN, BTN.back) || findButton(flatN, BTN.backLoose);
+      Utils.log(
+        `${this.label} sau nhập giờ → Quay lại tin mới #${newestWithBack.id}: ${backBtn.text}`
+      );
+      await this.clickButton(newestWithBack, backBtn.text, peer);
+      await sleep(1200);
+    }
+
+    const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
+      beforeId,
+      oldTime,
+    });
+    if (updated) return updated;
+
     for (let i = 0; i < 5; i++) {
       const latest = await this.getLatestMessage(peer);
       const body = String(latest?.message || latest?.text || '');
       const flatLatest = await this.getButtons(latest);
-      if (findButton(flatLatest, BTN.back)) return latest;
-      if (/nh[aậ]p\s*gi[aá]\s*tr[iị]/i.test(body) && !findButton(flatLatest, BTN.back)) {
-        // Vẫn đang ở prompt — tìm msg chi tiết gần nhất có Quay lại
-        const withBack = await this.findMessageWithBack(peer);
-        if (withBack) return withBack;
+      if (/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body) && findButton(flatLatest, BTN.back)) {
+        const raw = extractFieldTimeRaw(body);
+        const field = extractFieldTime(body, this.keepSeconds);
+        if (fieldMatchesTarget(raw, field, newTime, this.keepSeconds)) return latest;
+        if (field && oldTime && field !== oldTime) return latest;
       }
       await sleep(700);
     }
-    const withBack = await this.findMessageWithBack(peer);
-    if (withBack) return withBack;
-    return this.getLatestMessage(peer);
+    return (await this.findMessageWithBack(peer)) || (await this.getLatestMessage(peer));
   }
 }
 

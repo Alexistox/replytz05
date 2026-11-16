@@ -286,7 +286,7 @@ class Wf4Runner extends WfRunner {
     return lastSeen;
   }
 
-  /** WF4: nhập giờ xong phải Quay lại tin mới nhất để commit (khác WF1). */
+  /** Nhập giờ xong → Quay lại tin mới nhất để commit (cùng luồng WF1). */
   async editTimeOnDetail(detailMsg, peer, newTime) {
     let msg = detailMsg;
     const beforeId = detailMsg?.id || 0;
