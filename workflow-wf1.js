@@ -1381,8 +1381,70 @@ class WfRunner {
     return this.returnToTransactionList(msg, peer, { afterEdit: false });
   }
 
+  /**
+   * Sau sửa giờ: chờ tin chi tiết MỚI (id > beforeId) có Thời gian = target.
+   * Tránh lấy lại tin cũ vẫn còn Quay lại nhưng giờ chưa đổi.
+   */
+  async waitForUpdatedDetailTime(peer, targetTime, { beforeId = 0, oldTime = null } = {}) {
+    const Utils = require('./utils');
+    let lastSeen = null;
+    for (let i = 0; i < 10; i++) {
+      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      for (const m of msgs || []) {
+        if (!m || (beforeId && m.id <= beforeId)) continue;
+        const body = String(m.message || m.text || '');
+        if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
+        const flat = await this.getButtons(m);
+        if (!findButton(flat, BTN.back)) continue;
+        const raw = extractFieldTimeRaw(body);
+        const field = extractFieldTime(body, this.keepSeconds);
+        lastSeen = m;
+        if (fieldMatchesTarget(raw, field, targetTime, this.keepSeconds)) {
+          Utils.log(
+            `${this.label} chi tiết mới #${m.id}: Thời gian=${raw || field} (đúng ${targetTime})`
+          );
+          return m;
+        }
+        // Đã đổi khác oldTime và khớp phần ngày+giờ không giây
+        if (
+          oldTime &&
+          field &&
+          field !== oldTime &&
+          String(field).replace(/:\d{2}$/, '') === String(targetTime).replace(/:\d{2}$/, '')
+        ) {
+          Utils.log(`${this.label} chi tiết mới #${m.id}: Thời gian=${field} (soft)`);
+          return m;
+        }
+      }
+      // Cũng thử tin edit tại chỗ (cùng id) nếu text đã đổi
+      if (beforeId) {
+        for (const m of msgs || []) {
+          if (!m || m.id !== beforeId) continue;
+          const body = String(m.message || m.text || '');
+          if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
+          const raw = extractFieldTimeRaw(body);
+          const field = extractFieldTime(body, this.keepSeconds);
+          if (fieldMatchesTarget(raw, field, targetTime, this.keepSeconds)) {
+            Utils.log(`${this.label} chi tiết edit tại chỗ #${m.id}: ${raw || field}`);
+            return m;
+          }
+        }
+      }
+      await sleep(700);
+    }
+    Utils.log(
+      `${this.label} waitForUpdatedDetailTime: chưa thấy giờ=${targetTime}, trả lastSeen`
+    );
+    return lastSeen;
+  }
+
   async editTimeOnDetail(detailMsg, peer, newTime) {
     let msg = detailMsg;
+    const beforeId = detailMsg?.id || 0;
+    const oldBody = String(detailMsg?.message || detailMsg?.text || '');
+    const oldTime =
+      extractFieldTime(oldBody, this.keepSeconds) || extractFieldTimeRaw(oldBody) || null;
+
     const flat = await this.getButtons(msg);
     const labels = flat.map((b) => b.text);
     const Utils = require('./utils');
@@ -1391,7 +1453,10 @@ class WfRunner {
     // Chỉ bấm button đúng "Thời gian" (ưu tiên khớp chính xác / bắt đầu bằng)
     const timeBtn =
       flat.find((b) => /^⏰?\s*th[oờ]i\s*gian\b/i.test(b.text)) ||
-      flat.find((b) => /th[oờ]i\s*gian/i.test(b.text) && !/ng[uư][oờ]i|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(b.text)) ||
+      flat.find((b) =>
+        /th[oờ]i\s*gian/i.test(b.text) &&
+        !/ng[uư][oờ]i|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(b.text)
+      ) ||
       null;
     if (!timeBtn) {
       throw new Error(
@@ -1402,30 +1467,44 @@ class WfRunner {
     msg = await this.clickButton(msg, timeBtn.text, peer);
 
     const prompt = String(msg?.message || msg?.text || '');
-    if (/t[eê]n\s*ng[uư][oờ]i|ng[uư][oờ]i\s*chuy[eể]n|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(prompt) && !/th[oờ]i\s*gian/i.test(prompt)) {
+    if (
+      /t[eê]n\s*ng[uư][oờ]i|ng[uư][oờ]i\s*chuy[eể]n|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(
+        prompt
+      ) &&
+      !/th[oờ]i\s*gian/i.test(prompt)
+    ) {
       throw new Error(
         `Nhầm field (bot hỏi: ${prompt.slice(0, 80)}) — abort trước khi gửi giá trị.`
       );
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(1500);
+    await sleep(1200);
 
-    // Lấy tin mới nhất có Quay lại (màn chi tiết), bỏ qua tin "Nhập giá trị…" không keyboard
-    for (let i = 0; i < 5; i++) {
+    // Chờ tin chi tiết mới (không lấy tin cũ còn Quay lại nhưng giờ cũ)
+    const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
+      beforeId,
+      oldTime,
+    });
+    if (updated) return updated;
+
+    // Fallback: tin mới nhất có Quay lại + là màn chi tiết
+    for (let i = 0; i < 4; i++) {
       const latest = await this.getLatestMessage(peer);
       const body = String(latest?.message || latest?.text || '');
       const flatLatest = await this.getButtons(latest);
-      if (findButton(flatLatest, BTN.back)) return latest;
-      if (/nh[aậ]p\s*gi[aá]\s*tr[iị]/i.test(body) && !findButton(flatLatest, BTN.back)) {
-        // Vẫn đang ở prompt — tìm msg chi tiết gần nhất có Quay lại
-        const withBack = await this.findMessageWithBack(peer);
-        if (withBack) return withBack;
+      if (
+        /S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body) &&
+        findButton(flatLatest, BTN.back) &&
+        (!beforeId || latest.id >= beforeId)
+      ) {
+        const field = extractFieldTime(body, this.keepSeconds);
+        if (!oldTime || field !== oldTime) return latest;
       }
-      await sleep(700);
+      await sleep(600);
     }
     const withBack = await this.findMessageWithBack(peer);
-    if (withBack) return withBack;
+    if (withBack && (!beforeId || withBack.id >= beforeId)) return withBack;
     return this.getLatestMessage(peer);
   }
 }

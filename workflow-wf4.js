@@ -1220,23 +1220,42 @@ class Wf4Runner extends WfRunner {
           // Re-fetch detail ngay trước khi bấm Thời gian (tránh msg stale sau Trừ)
           const fresh = await this.findDetailMessage(peer);
           if (fresh) detail = fresh;
+          const beforeEditId = detail?.id || 0;
+          const oldTime =
+            extractFieldTime(String(detail?.message || detail?.text || ''), false) ||
+            null;
           detail = await this.editTimeOnDetail(detail, peer, contentTime);
-          await sleep(800);
-          detail = (await this.findDetailMessage(peer)) || detail;
+          // Đọc tin mới — tránh bản cũ còn Quay lại nhưng giờ chưa đổi
+          detail =
+            (await this.waitForUpdatedDetailTime(peer, contentTime, {
+              beforeId: beforeEditId,
+              oldTime,
+            })) || detail;
           body = String(detail?.message || detail?.text || '');
-          const rawAfter = extractFieldTimeRaw(body);
-          const fieldAfter = extractFieldTime(body, false);
-          if (!fieldMatchesTarget(rawAfter, fieldAfter, contentTime, false)) {
-            const soft =
-              fieldAfter &&
+          let rawAfter = extractFieldTimeRaw(body);
+          let fieldAfter = extractFieldTime(body, false);
+          const okTime = (raw, field) =>
+            fieldMatchesTarget(raw, field, contentTime, false) ||
+            (field &&
               contentTime &&
-              fieldAfter.replace(/:\d{2}$/, '') ===
-                contentTime.replace(/:\d{2}$/, '');
-            if (!soft) {
-              throw new Error(
-                `Sau sửa giờ vẫn lệch: ${rawAfter || fieldAfter} (cần ${contentTime})`
-              );
+              field.replace(/:\d{2}$/, '') === contentTime.replace(/:\d{2}$/, ''));
+          if (!okTime(rawAfter, fieldAfter)) {
+            await sleep(1000);
+            const again = await this.waitForUpdatedDetailTime(peer, contentTime, {
+              beforeId: beforeEditId,
+              oldTime,
+            });
+            if (again) {
+              detail = again;
+              body = String(detail.message || detail.text || '');
+              rawAfter = extractFieldTimeRaw(body);
+              fieldAfter = extractFieldTime(body, false);
             }
+          }
+          if (!okTime(rawAfter, fieldAfter)) {
+            throw new Error(
+              `Sau sửa giờ vẫn lệch: ${rawAfter || fieldAfter} (cần ${contentTime})`
+            );
           }
           s.stats.fixedTime += 1;
           await this.notify(
