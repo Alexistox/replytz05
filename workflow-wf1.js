@@ -1879,7 +1879,7 @@ class WfRunner {
   async waitForUpdatedDetailTime(peer, targetTime, { beforeId = 0, oldTime = null } = {}) {
     const Utils = require('./utils');
     let lastSeen = null;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 12; i++) {
       const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
@@ -1907,7 +1907,7 @@ class WfRunner {
           return m;
         }
       }
-      await sleep(250);
+      await sleep(400);
     }
     return lastSeen;
   }
@@ -1952,32 +1952,50 @@ class WfRunner {
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(250);
+    // BankAo chậm hơn các bước khác: phải chờ thông báo + Quay lại mới commit giờ
+    await sleep(500);
 
-    // Thông báo sau nhập giờ → Quay lại tin mới nhất để commit
-    let newestWithBack = null;
-    for (let i = 0; i < 6; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+    // Tin thông báo sau nhập giờ (có Quay lại) — không bấm Quay lại trên màn chi tiết cũ
+    let notifyWithBack = null;
+    for (let i = 0; i < 12; i++) {
+      const msgs = await this.bot.client.getMessages(peer, { limit: 10 });
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
         const flatM = await this.getButtons(m);
         const back = findButton(flatM, BTN.back) || findButton(flatM, BTN.backLoose);
         if (!back) continue;
-        newestWithBack = m;
+        const bodyM = String(m.message || m.text || '');
+        const isDetail = /S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(bodyM);
+        if (isDetail) {
+          const rawOn = extractFieldTimeRaw(bodyM);
+          // Chi tiết đã có giờ mới → khỏi cần Quay lại thông báo
+          if (rawOn && fieldMatchesTarget(rawOn, extractFieldTime(`Thời gian: ${rawOn}`, this.keepSeconds), newTime, this.keepSeconds)) {
+            Utils.log(`${this.label} sau nhập giờ → chi tiết đã cập nhật #${m.id}`);
+            return m;
+          }
+          continue; // bỏ qua màn chi tiết cũ / chưa commit
+        }
+        notifyWithBack = m;
         break;
       }
-      if (newestWithBack) break;
-      await sleep(200);
+      if (notifyWithBack) break;
+      await sleep(400);
     }
 
-    if (newestWithBack) {
-      const flatN = await this.getButtons(newestWithBack);
+    if (!notifyWithBack) {
+      throw new Error(
+        'Sau nhập giờ không thấy tin thông báo có Quay lại — không commit được thời gian'
+      );
+    }
+
+    {
+      const flatN = await this.getButtons(notifyWithBack);
       const backBtn = findButton(flatN, BTN.back) || findButton(flatN, BTN.backLoose);
       Utils.log(
-        `${this.label} sau nhập giờ → Quay lại tin mới #${newestWithBack.id}: ${backBtn.text}`
+        `${this.label} sau nhập giờ → Quay lại tin mới #${notifyWithBack.id}: ${backBtn.text}`
       );
-      await this.clickAt(newestWithBack, backBtn.row, backBtn.col, peer);
-      await sleep(300);
+      await this.clickAt(notifyWithBack, backBtn.row, backBtn.col, peer);
+      await sleep(700);
     }
 
     const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
@@ -1986,7 +2004,7 @@ class WfRunner {
     });
     if (updated) return updated;
 
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 6; i++) {
       const latest = await this.getLatestMessage(peer);
       const body = String(latest?.message || latest?.text || '');
       const flatLatest = await this.getButtons(latest);
@@ -1995,8 +2013,9 @@ class WfRunner {
         const field = extractFieldTime(body, this.keepSeconds);
         if (fieldMatchesTarget(raw, field, newTime, this.keepSeconds)) return latest;
         if (field && oldTime && field !== oldTime) return latest;
+        if (raw) return latest; // đã có giờ sau Quay lại — caller sẽ so khớp
       }
-      await sleep(250);
+      await sleep(400);
     }
     return (await this.findMessageWithBack(peer)) || (await this.getLatestMessage(peer));
   }
