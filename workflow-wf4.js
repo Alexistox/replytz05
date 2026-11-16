@@ -830,6 +830,23 @@ class Wf4Runner extends WfRunner {
     return !!reply;
   }
 
+  /** Màn xác nhận sau bấm Trừ: "Đã đổi loại… Trừ tiền" + nút Quay lại */
+  isFlipConfirmScreen(msg) {
+    const body = String(msg?.message || msg?.text || '');
+    return (
+      /đ[ãa]\s*đ[oổ]i\s*lo[aạ]i\s*giao\s*d[iị]ch\s*th[aà]nh\s*tr[uừ]/i.test(body) ||
+      (/đ[oổ]i\s*lo[aạ]i/i.test(body) && /tr[uừ]\s*ti[eề]n/i.test(body) && /s[oố]\s*d[uư]/i.test(body))
+    );
+  }
+
+  async findFlipConfirmMessage(peer, limit = 10) {
+    const msgs = await this.bot.client.getMessages(peer, { limit });
+    for (const m of msgs || []) {
+      if (this.isFlipConfirmScreen(m)) return m;
+    }
+    return null;
+  }
+
   async editTypeToTru(detailMsg, peer) {
     let msg = detailMsg;
     const flat = await this.getButtons(msg);
@@ -844,17 +861,25 @@ class Wf4Runner extends WfRunner {
     }
     Utils.log(`${this.label} click Trừ tiền: ${truBtn.text}`);
     msg = await this.clickButton(msg, truBtn.text, peer);
-    await sleep(1200);
-    // Bot thường edit tin tại chỗ — lấy lại tin chi tiết mới nhất
-    msg = (await this.findDetailMessage(peer)) || msg;
-    let body = String(msg?.message || msg?.text || '');
-    const info = bodyAmountInfo(body);
-    if (info && info.sign !== '-') {
-      Utils.log(
-        `${this.label} sau Trừ chưa thấy sign=- (slice: ${body.slice(0, 100)})`
-      );
+    await sleep(1000);
+
+    // Chờ màn "Đã đổi loại giao dịch thành Trừ tiền… Quay lại"
+    for (let i = 0; i < 8; i++) {
+      const confirm =
+        (await this.findFlipConfirmMessage(peer)) ||
+        (this.isFlipConfirmScreen(await this.getLatestMessage(peer))
+          ? await this.getLatestMessage(peer)
+          : null);
+      if (confirm) {
+        Utils.log(
+          `${this.label} màn xác nhận Trừ: ${String(confirm.message || confirm.text || '').slice(0, 80)}`
+        );
+        return confirm;
+      }
+      await sleep(600);
     }
-    return msg;
+    Utils.log(`${this.label} không thấy màn xác nhận Trừ — dùng latest`);
+    return (await this.getLatestMessage(peer)) || msg;
   }
 
   /** Tin chi tiết Sửa Giao Dịch gần nhất (có Quay lại). */
@@ -863,6 +888,7 @@ class Wf4Runner extends WfRunner {
     for (const m of msgs || []) {
       const body = String(m?.message || m?.text || '');
       if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
+      if (this.isFlipConfirmScreen(m)) continue;
       const flat = await this.getButtons(m);
       if (findButton(flat, BTN.back)) return m;
     }
@@ -879,37 +905,65 @@ class Wf4Runner extends WfRunner {
   }
 
   /**
-   * Sau đổi Trừ: Quay lại một lần, rồi vào lại màn có Sửa Thời Gian.
-   * Ưu tiên còn ở chi tiết; nếu về list thì mở lại GD (khớp mã GD/số tiền).
+   * Sau đổi Trừ: màn xác nhận → Quay lại → về chi tiết → Sửa Thời Gian.
+   * (Không mở list trừ khi Quay lại đưa về list.)
    */
-  async afterFlipBackThenReopenForTime(detailMsg, peer, fields, page, session) {
-    let msg = detailMsg || (await this.findDetailMessage(peer));
+  async afterFlipBackThenReopenForTime(confirmMsg, peer, fields, page, session) {
+    let msg =
+      confirmMsg ||
+      (await this.findFlipConfirmMessage(peer)) ||
+      (await this.getLatestMessage(peer));
+
+    // Đảm bảo đang ở màn xác nhận (chỉ Quay lại)
+    if (!this.isFlipConfirmScreen(msg)) {
+      const c = await this.findFlipConfirmMessage(peer);
+      if (c) msg = c;
+    }
+
     const flat0 = await this.getButtons(msg);
     const backBtn = findButton(flat0, BTN.back);
-    if (backBtn) {
-      Utils.log(`${this.label} sau Trừ → Quay lại: ${backBtn.text}`);
-      msg = await this.clickButton(msg, backBtn.text, peer);
-      await sleep(1000);
+    if (!backBtn) {
+      throw new Error(
+        `Sau đổi Trừ không thấy nút Quay lại. Body: ${String(msg?.message || msg?.text || '').slice(0, 120)}`
+      );
     }
+    Utils.log(`${this.label} màn xác nhận Trừ → Quay lại: ${backBtn.text}`);
+    msg = await this.clickButton(msg, backBtn.text, peer);
+    await sleep(1200);
 
-    // Có thể vẫn là chi tiết (tin edit) hoặc đã về list
-    let detail = await this.findDetailMessage(peer);
-    if (detail && (await this.messageHasTimeButton(detail))) {
-      const body = String(detail.message || detail.text || '');
-      if (this.detailMatchesItem(body, fields) || /tr[uừ]\s*ti[eề]n/i.test(body)) {
-        Utils.log(`${this.label} sau Quay lại vẫn ở chi tiết — sửa giờ tại đây`);
-        return { detail, body, page };
+    // Về màn chi tiết Sửa Giao Dịch (đã là Trừ) có nút Sửa Thời Gian
+    for (let i = 0; i < 6; i++) {
+      let detail = await this.findDetailMessage(peer);
+      if (!detail) {
+        detail = await this.getLatestMessage(peer);
       }
+      if (detail && (await this.messageHasTimeButton(detail))) {
+        const body = String(detail.message || detail.text || '');
+        const info = bodyAmountInfo(body);
+        if (
+          /S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body) &&
+          (this.detailMatchesItem(body, fields) ||
+            (info && info.sign === '-') ||
+            /tr[uừ]\s*ti[eề]n/i.test(body))
+        ) {
+          Utils.log(
+            `${this.label} sau Quay lại → chi tiết sẵn sàng sửa giờ (#${detail.id})`
+          );
+          return { detail, body, page };
+        }
+      }
+      await sleep(700);
     }
 
-    // Về list → mở lại đúng GD mới nhất khớp
-    msg = detail || msg;
+    // Fallback: về list trang 1 rồi mở lại GD
+    Utils.log(`${this.label} sau Quay lại chưa ra chi tiết — mở lại từ list`);
     try {
       msg = await this.ensureTxList(msg, peer);
     } catch (_e) {
       msg = (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer));
     }
-    const nav = await this.goToTxPage(msg, peer, page || 1);
+    msg = await this.goToFirstTxPage(msg, peer);
+    const nav = await this.goToTxPage(msg, peer, 1);
     session.listMsg = nav.msg;
     session.lastMsg = nav.msg;
 
@@ -1169,16 +1223,16 @@ class Wf4Runner extends WfRunner {
               replyTo
             );
           } else {
-            detail = await this.editTypeToTru(detail, peer);
+            const confirmMsg = await this.editTypeToTru(detail, peer);
             s.stats.flipped += 1;
             await this.notify(
               controlChatId,
-              `✅ B [${i + 1}] Đã đổi → Trừ\n↩️ Quay lại rồi mở lại để sửa giờ…`,
+              `✅ B [${i + 1}] Đã đổi → Trừ\n↩️ Quay lại → Sửa Thời Gian…`,
               replyTo
             );
-            // Bắt buộc Quay lại rồi vào lại GD trước khi sửa thời gian
+            // Màn xác nhận → Quay lại → chi tiết → sửa giờ
             const reopened = await this.afterFlipBackThenReopenForTime(
-              detail,
+              confirmMsg,
               peer,
               fields,
               page,
