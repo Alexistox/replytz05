@@ -224,12 +224,14 @@ class Wf4Runner extends WfRunner {
 
   isBusy(controlChatId) {
     const s = this.getSession(controlChatId);
+    if (!s) return false;
+    // Đã về chờ list → không còn bận (kể cả mode annotated_list còn sót)
+    if (s.phase === 'await_list') return false;
     return (
-      s &&
-      (s.phase === 'sending_a' ||
-        s.phase === 'editing_b' ||
-        s.phase === 'processing' ||
-        s.mode === 'annotated_list')
+      s.phase === 'sending_a' ||
+      s.phase === 'editing_b' ||
+      s.phase === 'processing' ||
+      s.mode === 'annotated_list'
     );
   }
 
@@ -968,6 +970,9 @@ class Wf4Runner extends WfRunner {
     s.phase = 'await_list';
     s.items = [];
     s.cancel = false;
+    // Xóa mode bận — nếu để annotated_list, list tiếp sẽ bị «xếp hàng» oan
+    delete s.mode;
+    delete s.phabOnly;
 
     if (summaryLines && summaryLines.length) {
       await this.notify(
@@ -1001,12 +1006,16 @@ class Wf4Runner extends WfRunner {
         session.queuedText = messageText;
         await this.notify(
           chatId,
-          '📥 Đã xếp hàng list tiếp — chạy ngay sau khi xong batch hiện tại.',
+          `📥 Đã xếp hàng list tiếp — chạy ngay sau khi xong batch hiện tại.\n(pha: \`${session.phase || '?'}\`)`,
           messageId
         );
         return true;
       }
-      await this.notify(chatId, '⏳ WF4 đang xử lý — đợi hoặc `/wf4 off`.', messageId);
+      await this.notify(
+        chatId,
+        `⏳ WF4 đang xử lý (pha: \`${session.phase || '?'}\`) — đợi hoặc \`/wf4 off\`.`,
+        messageId
+      );
       return true;
     }
 
@@ -1033,6 +1042,8 @@ class Wf4Runner extends WfRunner {
     }
 
     if (!this.isAwaitingList(chatId)) return false;
+    // Bỏ hàng đợi cũ (sót từ lúc mode annotated_list chưa clear) — dùng list vừa dán
+    if (session.queuedText) delete session.queuedText;
     return this.startPhaseA(messageText, chatId, messageId);
   }
 
