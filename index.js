@@ -611,7 +611,15 @@ class BankTransactionUserbot {
           // Mark as processed trước khi xử lý
           this.processedMessages.set(messageKey, currentTime);
 
-          // Cho phép reply cả tin nhắn từ chính mình nếu là tin nhắn giao dịch
+          // Giao dịch trừ (− / Tiền ra / 出款): /1 on không reply "1"
+          if (!Utils.isCreditTransactionMessage(messageText)) {
+            Utils.log(
+              `⏭️ Giao dịch trừ/ra — bỏ qua reply "${this.settings.replyMessage}" (${messageKey})`
+            );
+            return;
+          }
+
+          // Cho phép reply cả tin nhắn từ chính mình nếu là tin nhắn giao dịch cộng
           await this.handleTransactionMessage(message, messageText);
           return;
         }
@@ -1318,7 +1326,11 @@ class BankTransactionUserbot {
       this.settings.groupSettings[groupId] = { ...currentGroupSettings, replyEnabled: true };
       Utils.saveSettings(this.settings);
       Utils.log(`🟢 Chức năng reply đã BẬT cho group ${groupId}`);
-      await this.sendReply(chatId, messageId, '✅ Đã BẬT chức năng reply giao dịch cho nhóm này');
+      await this.sendReply(
+        chatId,
+        messageId,
+        '✅ Đã BẬT reply giao dịch cho nhóm này\n➕ Chỉ reply `1` cho giao dịch **cộng (+)**\n➖ Giao dịch **trừ (−)** không reply'
+      );
     } else if (action === 'off') {
       this.settings.groupSettings[groupId] = { ...currentGroupSettings, replyEnabled: false };
       Utils.saveSettings(this.settings);
@@ -1467,7 +1479,7 @@ class BankTransactionUserbot {
 ⏱️ Uptime: ${hours}h ${minutes}m
 
 📝 Commands:
-/1 on - Bật reply cho nhóm này
+/1 on - Bật reply giao dịch cộng (+) bằng "1" (trừ/− không reply)
 /1 off - Tắt reply cho nhóm này
 /ai on|off - Bật/tắt AI chat cho nhóm này (mặc định tắt) 👑
 /ai provider openai|claude|grok - Đổi model provider 👑
