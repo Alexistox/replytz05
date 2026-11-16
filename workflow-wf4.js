@@ -693,8 +693,9 @@ class Wf4Runner extends WfRunner {
         `Không thấy nút Trừ tiền. Buttons: ${flat.map((b) => b.text).join(' | ') || '(không)'}`
       );
     }
+    Utils.log(`${this.label} click Trừ tiền: ${truBtn.text}`);
     msg = await this.clickButton(msg, truBtn.text, peer);
-    await sleep(800);
+    await sleep(1000);
     // Có thể vẫn ở chi tiết (toggle) hoặc tin mới
     let body = String(msg?.message || msg?.text || '');
     if (!/S[uử]a\s*Giao\s*D[iị]ch/i.test(body)) {
@@ -706,9 +707,56 @@ class Wf4Runner extends WfRunner {
     }
     const info = bodyAmountInfo(body);
     if (info && info.sign !== '-') {
-      throw new Error(`Sau bấm Trừ vẫn chưa phải Trừ tiền (sign=${info.sign}).`);
+      // Một số bot đổi loại xong không còn hiện chi tiết — chấp nhận, sẽ Quay lại mở lại
+      Utils.log(
+        `${this.label} sau Trừ chưa thấy sign=- trên màn hiện tại (body slice: ${body.slice(0, 80)})`
+      );
     }
     return msg;
+  }
+
+  /**
+   * Sau đổi Trừ: phải Quay lại, rồi mới vào lại để Sửa Thời Gian.
+   * (Bot không cho sửa giờ ngay trên màn vừa bấm Trừ.)
+   */
+  async afterFlipBackThenReopenForTime(detailMsg, peer, fields, page, session) {
+    let msg = detailMsg;
+    const flat = await this.getButtons(msg);
+    const backBtn = findButton(flat, BTN.back);
+    if (backBtn) {
+      Utils.log(`${this.label} sau Trừ → Quay lại: ${backBtn.text}`);
+      msg = await this.clickButton(msg, backBtn.text, peer);
+      await sleep(900);
+    } else {
+      const withBack = await this.findMessageWithBack(peer);
+      if (withBack) {
+        const flat2 = await this.getButtons(withBack);
+        const b2 = findButton(flat2, BTN.back);
+        if (b2) {
+          Utils.log(`${this.label} sau Trừ → Quay lại (msg khác): ${b2.text}`);
+          msg = await this.clickButton(withBack, b2.text, peer);
+          await sleep(900);
+        }
+      }
+    }
+
+    // Về list GD rồi mở lại đúng giao dịch để sửa giờ
+    msg = await this.ensureTxList(msg, peer);
+    const nav = await this.goToTxPage(msg, peer, page || 1);
+    session.listMsg = nav.msg;
+    session.lastMsg = nav.msg;
+
+    const found = await this.findAndOpenItemOnB(
+      session,
+      fields,
+      session.controlChatId
+    );
+    if (!found) {
+      throw new Error(
+        'Sau đổi Trừ + Quay lại, không mở lại được GD để sửa thời gian'
+      );
+    }
+    return found;
   }
 
   detailMatchesItem(body, fields) {
@@ -916,9 +964,24 @@ class Wf4Runner extends WfRunner {
             );
           } else {
             detail = await this.editTypeToTru(detail, peer);
-            body = String(detail?.message || detail?.text || '');
             s.stats.flipped += 1;
-            await this.notify(controlChatId, `✅ B [${i + 1}] Đã đổi → Trừ`, replyTo);
+            await this.notify(
+              controlChatId,
+              `✅ B [${i + 1}] Đã đổi → Trừ\n↩️ Quay lại rồi mở lại để sửa giờ…`,
+              replyTo
+            );
+            // Bắt buộc Quay lại rồi vào lại GD trước khi sửa thời gian
+            const reopened = await this.afterFlipBackThenReopenForTime(
+              detail,
+              peer,
+              fields,
+              page,
+              s
+            );
+            detail = reopened.detail;
+            body = reopened.body;
+            page = reopened.page || page;
+            s.currentPage = page;
           }
         }
 
