@@ -961,8 +961,21 @@ class Wf4Runner extends WfRunner {
     const { peer, replyTo } = session;
     let msg = session.listMsg || session.lastMsg || (await this.getLatestMessage(peer));
     msg = await this.ensureTxList(msg, peer);
+    // GD mới thường ở trang 1 — bấm Trước đến 1/N trước khi quét
     msg = await this.goToFirstTxPage(msg, peer);
     msg = await this.ensureTxList(msg, peer);
+    const startInfo = this.parseLsgdPage(msg);
+    Utils.log(
+      `${this.label} tìm GD ${fields.amountDigits || '?'} từ trang ${startInfo?.page || '?'}/${startInfo?.total || '?'}`
+    );
+    if (startInfo && startInfo.page !== 1) {
+      await this.notify(
+        controlChatId,
+        `↩️ Đang về trang 1 LSGD (hiện ${startInfo.page}/${startInfo.total})…`,
+        replyTo
+      );
+      msg = await this.goToFirstTxPage(msg, peer);
+    }
 
     let page = 1;
     let knownTotal = this.parseLsgdPage(msg)?.total || null;
@@ -973,6 +986,7 @@ class Wf4Runner extends WfRunner {
       msg = nav.msg;
       page = nav.page || page;
       if (nav.total) knownTotal = nav.total;
+      Utils.log(`${this.label} quét LSGD trang ${page}/${knownTotal || '?'}`);
 
       let flat = await this.getButtons(msg);
       const txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
@@ -994,14 +1008,27 @@ class Wf4Runner extends WfRunner {
         if (this.detailMatchesItem(body, fields)) {
           return { detail, body, page, msg };
         }
+        // Nới: cùng số tiền + giờ Nội dung khớp /bdsd, hoặc GD mới ở trang 1
+        const info = bodyAmountInfo(body);
+        if (info && fields.amountDigits && info.digits === fields.amountDigits) {
+          const wantT = this.resolveContentTime('', fields);
+          const gotT = extractContentTime(body, false);
+          if ((wantT && gotT && wantT === gotT) || page === 1) {
+            Utils.log(
+              `${this.label} nhận GD soft-match tiền ${fields.amountDigits} (trang ${page}, time ${gotT || '?'})`
+            );
+            return { detail, body, page, msg };
+          }
+        }
         msg = await this.returnToTransactionList(detail, peer, { afterEdit: false });
+        // Sau Quay lại bot về trang 1 — nhảy lại trang đang quét
         const backNav = await this.goToTxPage(msg, peer, page);
         msg = backNav.msg;
       }
 
       if (knownTotal != null && page >= knownTotal) break;
       flat = await this.getButtons(msg);
-      const nextBtn = findButton(flat, BTN.nextPage);
+      const nextBtn = this.findPagerNext(flat);
       if (!nextBtn) break;
       const before = this.parseLsgdPage(msg)?.page || page;
       msg = await this.clickButton(msg, nextBtn.text, peer);
@@ -1015,7 +1042,7 @@ class Wf4Runner extends WfRunner {
 
     await this.notify(
       controlChatId,
-      `⚠️ Không thấy GD khớp tiền ${fields.amountDigits || '?'} trên bot B.`,
+      `⚠️ Không thấy GD khớp tiền ${fields.amountDigits || '?'} trên bot B (đã về trang 1 rồi quét).`,
       replyTo
     );
     return null;

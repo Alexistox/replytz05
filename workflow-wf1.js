@@ -844,7 +844,7 @@ class WfRunner {
 
       const flat = await this.getButtons(msg);
       if (cur < target) {
-        const next = findButton(flat, BTN.nextPage);
+        const next = this.findPagerNext(flat);
         if (!next) {
           Utils.log(`${this.label} goToTxPage: hết nút Sau tại trang ${cur} (cần ${target})`);
           return { msg, page: cur, total };
@@ -862,7 +862,7 @@ class WfRunner {
         continue;
       }
 
-      const prev = findButton(flat, BTN.prevPage);
+      const prev = this.findPagerPrev(flat);
       if (!prev) {
         return { msg, page: cur, total };
       }
@@ -1013,14 +1013,61 @@ class WfRunner {
     return (await this.ensureTxList(msg, peer)) || msg;
   }
 
-  /** Về trang 1 của list GD (bấm Trước đến hết). */
+  /**
+   * Nút Trước/Sau phân trang — không dùng ⬅️ chung với Quay lại.
+   */
+  findPagerPrev(flat) {
+    const list = flat || [];
+    return (
+      list.find((b) =>
+        /tr[uư][oớ]c|prev|before|trang\s*tr[uư][oớ]c|v[eề]\s*tr[uư][oớ]c/i.test(b.text)
+      ) ||
+      list.find((b) => /^\s*«\s*$/.test(b.text) || /^\s*‹\s*$/.test(b.text)) ||
+      null
+    );
+  }
+
+  findPagerNext(flat) {
+    const list = flat || [];
+    return (
+      list.find((b) =>
+        /ti[eế]p(\s*theo)?|next|sau|trang\s*sau|xem\s*th[eê]m|giao\s*d[iị]ch\s*ti[eế]p/i.test(
+          b.text
+        )
+      ) ||
+      list.find((b) => /^\s*»\s*$/.test(b.text) || /^\s*›\s*$/.test(b.text)) ||
+      null
+    );
+  }
+
+  /** Về trang 1 của list GD (bấm Trước đến Trang 1/N — GD mới thường ở đây). */
   async goToFirstTxPage(msg, peer) {
-    for (let i = 0; i < 15; i++) {
+    const Utils = require('./utils');
+    msg = await this.ensureTxList(msg, peer);
+    for (let i = 0; i < 20; i++) {
+      const info = this.parseLsgdPage(msg);
+      const cur = info?.page;
+      if (cur === 1) {
+        Utils.log(`${this.label} LSGD đã ở trang 1/${info.total || '?'}`);
+        return msg;
+      }
       const flat = await this.getButtons(msg);
-      const prev = findButton(flat, BTN.prevPage);
-      if (!prev) break;
+      const prev = this.findPagerPrev(flat);
+      if (!prev) {
+        Utils.log(
+          `${this.label} goToFirstTxPage: không còn nút Trước (page=${cur || '?'})`
+        );
+        break;
+      }
+      Utils.log(
+        `${this.label} LSGD trang ${cur || '?'} → bấm Trước «${prev.text}» về trang 1`
+      );
       msg = await this.clickButton(msg, prev.text, peer);
-      await sleep(500);
+      await sleep(600);
+      msg =
+        (await this.findTxListMessage(peer)) ||
+        (await this.getLatestMessage(peer)) ||
+        msg;
     }
     return msg;
   }
