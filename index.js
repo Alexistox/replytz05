@@ -10,6 +10,7 @@ const ClaudeCode = require('./claude-code');
 const { WfRunner } = require('./workflow-wf1');
 const { Wf2BdsdRunner, isPureBdsdList } = require('./workflow-wf2');
 const { Wf4Runner, looksLikeWf4List } = require('./workflow-wf4');
+const { isWf1AnnotatedRepairMessage } = require('./workflow-wf1');
 const { createControlServer } = require('./control-server');
 
 class BankTransactionUserbot {
@@ -534,30 +535,34 @@ class BankTransactionUserbot {
         const chatKeyList = String(chatId);
         const suppressUntilList = this.claudeCodeSuppressOutUntil.get(chatKeyList) || 0;
         if (!(message.out && Date.now() < suppressUntilList)) {
-          if (
-            this.wf4.isAwaitingList(chatId) ||
-            (this.wf4.isActive(chatId) && looksLikeWf4List(messageText)) ||
-            (this.wf4.isAwaitingUserInput(chatId) && looksLikeWf4List(messageText))
-          ) {
-            this.processedMessages.set(messageKey, currentTime);
-            const handledWf4 = await this.wf4.handleIncomingList(
-              chatId,
-              messageText,
-              messageId
-            );
-            if (handledWf4) return;
-          }
-          if (
-            !this.wf4.isActive(chatId) &&
-            (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText))
-          ) {
-            this.processedMessages.set(messageKey, currentTime);
-            const handledWf2 = await this.wf2.handleIncomingList(
-              chatId,
-              messageText,
-              messageId
-            );
-            if (handledWf2) return;
+          // /wf1 + list Cộng/Trừ + SĐT: thuộc WF1 (logic pha B) — không để WF2/WF4 hearing cướp
+          const wf1ListExclusive = isWf1AnnotatedRepairMessage(messageText);
+          if (!wf1ListExclusive) {
+            if (
+              this.wf4.isAwaitingList(chatId) ||
+              (this.wf4.isActive(chatId) && looksLikeWf4List(messageText)) ||
+              (this.wf4.isAwaitingUserInput(chatId) && looksLikeWf4List(messageText))
+            ) {
+              this.processedMessages.set(messageKey, currentTime);
+              const handledWf4 = await this.wf4.handleIncomingList(
+                chatId,
+                messageText,
+                messageId
+              );
+              if (handledWf4) return;
+            }
+            if (
+              !this.wf4.isActive(chatId) &&
+              (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText))
+            ) {
+              this.processedMessages.set(messageKey, currentTime);
+              const handledWf2 = await this.wf2.handleIncomingList(
+                chatId,
+                messageText,
+                messageId
+              );
+              if (handledWf2) return;
+            }
           }
         }
       }
@@ -1255,7 +1260,7 @@ class BankTransactionUserbot {
         if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF1')) {
           return;
         }
-        await this.wf1.handleWfCommand(args, chatId, messageId);
+        await this.wf1.handleWfCommand(args, chatId, messageId, messageText);
         break;
 
       case '/wf2':
@@ -1635,6 +1640,7 @@ Hỏi thẻ (卡, 银行卡, 要卡, 换卡, 卡号, ka): gửi "1", nhắn nhó
 /cc - Claude Code pilot (admin Telegram nhóm này — không dùng admin bot cục bộ)
 /wf1bot|/wfbot - Đặt bot WF1 (admin nhóm)
 /wf1 - WF1 sửa TG không giây (admin nhóm)
+/wf1 + list Cộng/Trừ + /bdsd (có SĐT) - sửa theo list (logic pha B; không bị WF2/WF4 hearing)
 /wf3bot - Đặt bot WF3 (admin nhóm)
 /wf3 - WF3 giữ giây (admin nhóm)
 /wf2bot - Đặt bot /bdsd WF2 (admin nhóm)

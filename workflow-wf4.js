@@ -22,100 +22,15 @@ const {
   fieldMatchesTarget,
   bodyAmountInfo,
   findButton,
+  KIND_LINE_RE,
+  extractAnnotatedItems: extractWf4Items,
+  looksLikeAnnotatedList: looksLikeWf4List,
+  parseBdsdFields,
+  contentNeedle,
+  listHasPhone: listHasPhoneForPhaseB,
 } = require('./workflow-wf1');
-const { BDSD_LINE } = require('./workflow-wf2');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const KIND_LINE_RE =
-  /^\s*\d+\.\s*(C[oộ]ng|Tr[uừ]|Cong|Tru)\s*$/im;
-
-function normalizeKind(raw) {
-  const s = String(raw || '')
-    .normalize('NFC')
-    .toLowerCase();
-  if (/tr[uừ]|tru/.test(s)) return 'tru';
-  return 'cong';
-}
-
-/** Parse list có nhãn Cộng/Trừ + /bdsd */
-function extractWf4Items(text) {
-  const lines = String(text || '')
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const items = [];
-  let pendingKind = null;
-  for (const line of lines) {
-    if (/^\/wf4(bot)?(\s|$|@)/i.test(line) && !BDSD_LINE.test(line)) continue;
-    const km = line.match(KIND_LINE_RE);
-    if (km) {
-      pendingKind = normalizeKind(km[1]);
-      continue;
-    }
-    if (BDSD_LINE.test(line)) {
-      if (!pendingKind) {
-        const err = new Error(
-          'Mỗi dòng `/bdsd` cần có nhãn trước đó, vd `2. Trừ` rồi mới `/bdsd …`.'
-        );
-        err.code = 'WF4_FORMAT';
-        throw err;
-      }
-      items.push({ kind: pendingKind, line: line.replace(/^\s+/, '') });
-      pendingKind = null;
-    }
-  }
-  return items;
-}
-
-function looksLikeWf4List(text) {
-  const raw = String(text || '');
-  const hasKind = /^\s*\d+\.\s*(C[oộ]ng|Tr[uừ]|Cong|Tru)\s*$/im.test(raw);
-  const hasBdsd = /^\s*\/bdsd\s+\S+/im.test(raw);
-  if (!hasKind || !hasBdsd) return false;
-  try {
-    return extractWf4Items(raw).length > 0;
-  } catch (_e) {
-    return false;
-  }
-}
-
-/** /bdsd phone pass NAME STK amount GD:… */
-function parseBdsdFields(line) {
-  const raw = String(line || '').trim();
-  const m = raw.match(
-    /^\/bdsd\s+(\S+)\s+(\S+)\s+(.+?)\s+(\d{8,16})\s+(\d+)\s+(.*)$/i
-  );
-  if (m) {
-    return {
-      phone: m[1],
-      pass: m[2],
-      name: m[3].trim(),
-      stk: m[4],
-      amountDigits: String(m[5]).replace(/\D/g, ''),
-      content: m[6].trim(),
-    };
-  }
-  const gdIdx = raw.search(/\bGD\s*:/i);
-  const head = gdIdx >= 0 ? raw.slice(0, gdIdx) : raw;
-  const content = gdIdx >= 0 ? raw.slice(gdIdx).trim() : '';
-  const nums = [...head.matchAll(/\b(\d+)\b/g)].map((x) => x[1]);
-  const amountDigits = nums.length ? nums[nums.length - 1] : '';
-  const stk = nums.length >= 2 ? nums[nums.length - 2] : '';
-  return { phone: '', pass: '', name: '', stk, amountDigits, content };
-}
-
-function contentNeedle(content) {
-  const c = String(content || '');
-  const gdCode =
-    c.match(/\bGD\s+([A-Z0-9]{8,})\b/i) ||
-    c.match(/\b(FT\d+)\b/i) ||
-    c.match(/\b(6319[A-Z0-9]+)\b/i);
-  if (gdCode) return gdCode[1];
-  const compact = c.match(/\d{6,8}[-–—]\d{1,2}:\d{2}/);
-  if (compact) return compact[0];
-  return c.replace(/^GD\s*:\s*/i, '').slice(0, 40).trim();
-}
 
 function emptyStats() {
   return {

@@ -38,6 +38,127 @@ const BTN = {
     /tr[uư][oớ]c|prev|before|trang\s*tr[uư][oớ]c|«|‹|⬅️|v[eề]\s*tr[uư][oớ]c/i,
 };
 
+const BDSD_LINE = /^\s*\/bdsd\s+\S+/i;
+const KIND_LINE_RE = /^\s*\d+\.\s*(C[oộ]ng|Tr[uừ]|Cong|Tru)\s*$/im;
+
+function normalizeKind(raw) {
+  const s = String(raw || '')
+    .normalize('NFC')
+    .toLowerCase();
+  if (/tr[uừ]|tru/.test(s)) return 'tru';
+  return 'cong';
+}
+
+/** Parse list nhãn Cộng/Trừ + /bdsd (logic pha B). */
+function extractAnnotatedItems(text) {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const items = [];
+  let pendingKind = null;
+  for (const line of lines) {
+    if (
+      /^\/(wf[1-4](bot)?|wfbot|phab)(\s|$|@)/i.test(line) &&
+      !BDSD_LINE.test(line)
+    ) {
+      continue;
+    }
+    const km = line.match(KIND_LINE_RE);
+    if (km) {
+      pendingKind = normalizeKind(km[1]);
+      continue;
+    }
+    if (BDSD_LINE.test(line)) {
+      if (!pendingKind) {
+        const err = new Error(
+          'Mỗi dòng `/bdsd` cần có nhãn trước đó, vd `2. Trừ` rồi mới `/bdsd …`.'
+        );
+        err.code = 'WF_LIST_FORMAT';
+        throw err;
+      }
+      items.push({ kind: pendingKind, line: line.replace(/^\s+/, '') });
+      pendingKind = null;
+    }
+  }
+  return items;
+}
+
+function looksLikeAnnotatedList(text) {
+  const raw = String(text || '');
+  const hasKind = /^\s*\d+\.\s*(C[oộ]ng|Tr[uừ]|Cong|Tru)\s*$/im.test(raw);
+  const hasBdsd = /^\s*\/bdsd\s+\S+/im.test(raw);
+  if (!hasKind || !hasBdsd) return false;
+  try {
+    return extractAnnotatedItems(raw).length > 0;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/** /bdsd phone pass NAME STK amount GD:… */
+function parseBdsdFields(line) {
+  const raw = String(line || '').trim();
+  const m = raw.match(
+    /^\/bdsd\s+(\S+)\s+(\S+)\s+(.+?)\s+(\d{8,16})\s+(\d+)\s+(.*)$/i
+  );
+  if (m) {
+    return {
+      phone: m[1],
+      pass: m[2],
+      name: m[3].trim(),
+      stk: m[4],
+      amountDigits: String(m[5]).replace(/\D/g, ''),
+      content: m[6].trim(),
+    };
+  }
+  const gdIdx = raw.search(/\bGD\s*:/i);
+  const head = gdIdx >= 0 ? raw.slice(0, gdIdx) : raw;
+  const content = gdIdx >= 0 ? raw.slice(gdIdx).trim() : '';
+  const nums = [...head.matchAll(/\b(\d+)\b/g)].map((x) => x[1]);
+  const amountDigits = nums.length ? nums[nums.length - 1] : '';
+  const stk = nums.length >= 2 ? nums[nums.length - 2] : '';
+  const phone = nums.find((n) => n.length >= 9 && n.length <= 11) || '';
+  return { phone, pass: '', name: '', stk, amountDigits, content };
+}
+
+function contentNeedle(content) {
+  const c = String(content || '');
+  const gdCode =
+    c.match(/\bGD\s+([A-Z0-9]{8,})\b/i) ||
+    c.match(/\b(FT\d+)\b/i) ||
+    c.match(/\b(6319[A-Z0-9]+)\b/i);
+  if (gdCode) return gdCode[1];
+  const compact = c.match(/\d{6,8}[-–—]\d{1,2}:\d{2}/);
+  if (compact) return compact[0];
+  return c.replace(/^GD\s*:\s*/i, '').slice(0, 40).trim();
+}
+
+function listHasPhone(textOrItems) {
+  let items = textOrItems;
+  if (!Array.isArray(items)) {
+    if (!looksLikeAnnotatedList(textOrItems)) return false;
+    try {
+      items = extractAnnotatedItems(textOrItems);
+    } catch (_e) {
+      return false;
+    }
+  }
+  return items.some((it) => {
+    const f = parseBdsdFields(it.line);
+    return String(f.phone || '').replace(/\D/g, '').length >= 9;
+  });
+}
+
+/**
+ * `/wf1` + list Cộng/Trừ + /bdsd có SĐT → WF1 dùng logic pha B (không phải WF4 hearing).
+ */
+function isWf1AnnotatedRepairMessage(text) {
+  const raw = String(text || '');
+  if (!/^\s*\/wf1(?!bot)\b/im.test(raw)) return false;
+  return looksLikeAnnotatedList(raw) && listHasPhone(raw);
+}
+
 /**
  * Formats trong Nội dung / Thời gian:
  * - Compact 8: 13112026-22:08:11 → DDMMYYYY + giờ (ưu tiên — tránh khớp nhầm 6 số)
@@ -458,8 +579,15 @@ class WfRunner {
 
   /**
    * /wf1|/wf2 on|off|status|help
+   * /wf1 + list Cộng/Trừ + /bdsd có SĐT → logic pha B (Trừ + sửa giờ theo list)
    */
-  async handleWfCommand(args, chatId, messageId) {
+  async handleWfCommand(args, chatId, messageId, rawText = '') {
+    // List annotated + SĐT: học logic pha B — sửa theo từng mục, không quét mù
+    if (this.id === 'wf1' && isWf1AnnotatedRepairMessage(rawText || '')) {
+      await this.startAnnotatedListRepair(rawText, chatId, messageId);
+      return;
+    }
+
     const action = String(args[0] || 'help').toLowerCase();
     if (action === 'off' || action === 'stop' || action === 'cancel') {
       this.clearSession(chatId);
@@ -517,6 +645,9 @@ class WfRunner {
         '',
         `\`${this.cmdBot} @bot\` — đặt bot cho ${this.label}`,
         `\`${this.cmd} on\` — chạy workflow sửa thời gian GD`,
+        this.id === 'wf1'
+          ? `\`/wf1\` + list \`N. Cộng|Trừ\` + \`/bdsd …\` (có SĐT) — sửa theo list (Trừ + giờ), logic pha B`
+          : '',
         `\`${this.cmd} off\` — hủy`,
         `\`${this.cmd} status\``,
         '',
@@ -524,7 +655,9 @@ class WfRunner {
           ? 'Sửa thời gian **có giây** (vd `15/11/2026 18:34:26`).'
           : 'Sửa thời gian **không giây** (vd `15/11/2026 18:34`).',
         'WF2 (gửi `/bdsd`) — `/wf2` / `/wf2bot`. WF3 (có giây) — `/wf3` / `/wf3bot`.',
-      ].join('\n')
+      ]
+        .filter(Boolean)
+        .join('\n')
     );
   }
 
@@ -1482,12 +1615,676 @@ class WfRunner {
     }
     return (await this.findMessageWithBack(peer)) || (await this.getLatestMessage(peer));
   }
+
+  // —— Logic pha B (list Cộng/Trừ + /bdsd): WF1 học để sửa theo list ——
+
+  findPagerPrevSafe(flat) {
+    const list = flat || [];
+    return (
+      list.find((b) =>
+        /tr[uư][oớ]c|prev|before|trang\s*tr[uư][oớ]c|v[eề]\s*tr[uư][oớ]c/i.test(b.text)
+      ) ||
+      list.find((b) => /^\s*«\s*$/.test(b.text) || /^\s*‹\s*$/.test(b.text)) ||
+      null
+    );
+  }
+
+  findPagerNextSafe(flat) {
+    const list = flat || [];
+    return (
+      list.find((b) =>
+        /ti[eế]p(\s*theo)?|next|sau|trang\s*sau|xem\s*th[eê]m|giao\s*d[iị]ch\s*ti[eế]p/i.test(
+          b.text
+        )
+      ) ||
+      list.find((b) => /^\s*»\s*$/.test(b.text) || /^\s*›\s*$/.test(b.text)) ||
+      null
+    );
+  }
+
+  phonesFromItems(items) {
+    const phones = [];
+    const seen = new Set();
+    for (const it of items || []) {
+      const p = String(parseBdsdFields(it.line).phone || '').replace(/\D/g, '');
+      if (p.length >= 9 && !seen.has(p)) {
+        seen.add(p);
+        phones.push(p);
+      }
+    }
+    return phones;
+  }
+
+  accountMatchesPhones(btnText, phones) {
+    const t = String(btnText || '');
+    if (!phones?.length) return false;
+    if (BTN.back.test(t) || /quay\s*l[aạ]i/i.test(t)) return false;
+    return phones.some((p) => p && t.includes(p));
+  }
+
+  isFlipConfirmScreen(msg) {
+    const body = String(msg?.message || msg?.text || '');
+    return (
+      /đ[ãa]\s*đ[oổ]i\s*lo[aạ]i\s*giao\s*d[iị]ch\s*th[aà]nh\s*tr[uừ]/i.test(body) ||
+      (/đ[oổ]i\s*lo[aạ]i/i.test(body) &&
+        /tr[uừ]\s*ti[eề]n/i.test(body) &&
+        /s[oố]\s*d[uư]/i.test(body))
+    );
+  }
+
+  async findFlipConfirmMessage(peer, limit = 10) {
+    const msgs = await this.bot.client.getMessages(peer, { limit });
+    for (const m of msgs || []) {
+      if (this.isFlipConfirmScreen(m)) return m;
+    }
+    return null;
+  }
+
+  async findDetailMessage(peer, limit = 12) {
+    const msgs = await this.bot.client.getMessages(peer, { limit });
+    for (const m of msgs || []) {
+      const body = String(m?.message || m?.text || '');
+      if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
+      if (this.isFlipConfirmScreen(m)) continue;
+      const flat = await this.getButtons(m);
+      if (findButton(flat, BTN.back)) return m;
+    }
+    return null;
+  }
+
+  async messageHasTimeButton(msg) {
+    const flat = await this.getButtons(msg);
+    return flat.some(
+      (b) =>
+        /th[oờ]i\s*gian/i.test(b.text) &&
+        !/ng[uư][oờ]i|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(b.text)
+    );
+  }
+
+  detailMatchesItem(body, fields) {
+    if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) return false;
+    const info = bodyAmountInfo(body);
+    if (!info || !fields.amountDigits) return false;
+    if (info.digits !== fields.amountDigits) return false;
+    const raw = String(body || '');
+    const needle = contentNeedle(fields.content);
+    if (needle && raw.toLowerCase().includes(String(needle).toLowerCase())) {
+      return true;
+    }
+    if (fields.content) {
+      const chunk = fields.content.replace(/^GD\s*:\s*/i, '').slice(0, 28);
+      if (chunk && raw.toLowerCase().includes(chunk.toLowerCase())) return true;
+    }
+    if (fields.stk && raw.includes(fields.stk)) return true;
+    return !needle;
+  }
+
+  resolveContentTime(body, fields) {
+    return (
+      extractContentTime(body, this.keepSeconds) ||
+      (fields?.content ? extractContentTime(fields.content, this.keepSeconds) : null) ||
+      (fields?.content
+        ? extractContentTime(`Nội dung: ${fields.content}`, this.keepSeconds)
+        : null)
+    );
+  }
+
+  async editTypeToTru(detailMsg, peer) {
+    let msg = detailMsg;
+    const flat = await this.getButtons(msg);
+    const truBtn =
+      flat.find((b) => /lo[aạ]i\s*giao\s*d[iị]ch\s*:\s*tr[uừ]\s*ti[eề]n/i.test(b.text)) ||
+      flat.find((b) => /^tr[uừ]\s*ti[eề]n$/i.test(b.text)) ||
+      flat.find(
+        (b) => /tr[uừ]\s*ti[eề]n/i.test(b.text) && /lo[aạ]i|giao\s*d[iị]ch/i.test(b.text)
+      );
+    if (!truBtn) {
+      throw new Error(
+        `Không thấy nút Trừ tiền. Buttons: ${flat.map((b) => b.text).join(' | ') || '(không)'}`
+      );
+    }
+    const Utils = require('./utils');
+    Utils.log(`${this.label} click Trừ tiền: ${truBtn.text}`);
+    msg = await this.clickButton(msg, truBtn.text, peer);
+    await sleep(1000);
+    for (let i = 0; i < 8; i++) {
+      const confirm =
+        (await this.findFlipConfirmMessage(peer)) ||
+        (this.isFlipConfirmScreen(await this.getLatestMessage(peer))
+          ? await this.getLatestMessage(peer)
+          : null);
+      if (confirm) return confirm;
+      await sleep(600);
+    }
+    return (await this.getLatestMessage(peer)) || msg;
+  }
+
+  async afterFlipBackThenReopenForTime(confirmMsg, peer, fields, page, session) {
+    let msg =
+      confirmMsg ||
+      (await this.findFlipConfirmMessage(peer)) ||
+      (await this.getLatestMessage(peer));
+    if (!this.isFlipConfirmScreen(msg)) {
+      const c = await this.findFlipConfirmMessage(peer);
+      if (c) msg = c;
+    }
+    const flat0 = await this.getButtons(msg);
+    const backBtn = findButton(flat0, BTN.back);
+    if (!backBtn) {
+      throw new Error(
+        `Sau đổi Trừ không thấy nút Quay lại. Body: ${String(msg?.message || msg?.text || '').slice(0, 120)}`
+      );
+    }
+    const Utils = require('./utils');
+    Utils.log(`${this.label} màn xác nhận Trừ → Quay lại: ${backBtn.text}`);
+    msg = await this.clickButton(msg, backBtn.text, peer);
+    await sleep(1200);
+
+    for (let i = 0; i < 6; i++) {
+      let detail = await this.findDetailMessage(peer);
+      if (!detail) detail = await this.getLatestMessage(peer);
+      if (detail && (await this.messageHasTimeButton(detail))) {
+        const body = String(detail.message || detail.text || '');
+        const info = bodyAmountInfo(body);
+        if (
+          /S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body) &&
+          (this.detailMatchesItem(body, fields) ||
+            (info && info.sign === '-') ||
+            /tr[uừ]\s*ti[eề]n/i.test(body))
+        ) {
+          return { detail, body, page };
+        }
+      }
+      await sleep(700);
+    }
+
+    msg = await this.ensureTxList(msg, peer);
+    msg = await this.goToFirstTxPageSafe(msg, peer);
+    const nav = await this.goToTxPageSafe(msg, peer, 1);
+    session.listMsg = nav.msg;
+    session.lastMsg = nav.msg;
+    const found = await this.findAndOpenListItem(session, fields, session.controlChatId);
+    if (!found) {
+      throw new Error('Sau đổi Trừ + Quay lại, không mở lại được GD để sửa thời gian');
+    }
+    return found;
+  }
+
+  async goToFirstTxPageSafe(msg, peer) {
+    msg = await this.ensureTxList(msg, peer);
+    for (let i = 0; i < 20; i++) {
+      const info = this.parseLsgdPage(msg);
+      if (info?.page === 1) return msg;
+      const flat = await this.getButtons(msg);
+      const prev = this.findPagerPrevSafe(flat);
+      if (!prev) break;
+      msg = await this.clickButton(msg, prev.text, peer);
+      await sleep(600);
+      msg =
+        (await this.findTxListMessage(peer)) ||
+        (await this.getLatestMessage(peer)) ||
+        msg;
+    }
+    return msg;
+  }
+
+  async goToTxPageSafe(msg, peer, targetPage) {
+    const target = Math.max(1, Number(targetPage) || 1);
+    msg = await this.ensureTxList(msg, peer);
+    for (let guard = 0; guard < 25; guard++) {
+      const info = this.parseLsgdPage(msg);
+      const cur = info?.page || 1;
+      const total = info?.total || null;
+      if (cur === target) return { msg, page: cur, total };
+      if (total != null && target > total) return { msg, page: cur, total };
+      const flat = await this.getButtons(msg);
+      if (cur < target) {
+        const next = this.findPagerNextSafe(flat);
+        if (!next) return { msg, page: cur, total };
+        msg = await this.clickButton(msg, next.text, peer);
+        await sleep(700);
+        msg =
+          (await this.findTxListMessage(peer)) ||
+          (await this.getLatestMessage(peer)) ||
+          msg;
+        continue;
+      }
+      const prev = this.findPagerPrevSafe(flat);
+      if (!prev) return { msg, page: cur, total };
+      msg = await this.clickButton(msg, prev.text, peer);
+      await sleep(700);
+      msg =
+        (await this.findTxListMessage(peer)) ||
+        (await this.getLatestMessage(peer)) ||
+        msg;
+    }
+    const info = this.parseLsgdPage(msg);
+    return { msg, page: info?.page || 1, total: info?.total || null };
+  }
+
+  async findAndOpenListItem(session, fields, controlChatId) {
+    const { peer, replyTo } = session;
+    const Utils = require('./utils');
+    let msg = session.listMsg || session.lastMsg || (await this.getLatestMessage(peer));
+    msg = await this.ensureTxList(msg, peer);
+    msg = await this.goToFirstTxPageSafe(msg, peer);
+    msg = await this.ensureTxList(msg, peer);
+    const startInfo = this.parseLsgdPage(msg);
+    Utils.log(
+      `${this.label} tìm GD ${fields.amountDigits || '?'} từ trang ${startInfo?.page || '?'}/${startInfo?.total || '?'}`
+    );
+
+    let page = 1;
+    let knownTotal = this.parseLsgdPage(msg)?.total || null;
+    const maxPages = knownTotal || 20;
+
+    for (let p = 0; p < maxPages; p++) {
+      const nav = await this.goToTxPageSafe(msg, peer, page);
+      msg = nav.msg;
+      page = nav.page || page;
+      if (nav.total) knownTotal = nav.total;
+
+      const flat = await this.getButtons(msg);
+      const txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
+      for (const btn of txButtons) {
+        const labelDigits = (
+          (btn.text.match(/(\d[\d.,]*)\s*đ/i) || [])[1] || ''
+        ).replace(/\D/g, '');
+        if (
+          fields.amountDigits &&
+          labelDigits &&
+          labelDigits !== fields.amountDigits
+        ) {
+          continue;
+        }
+
+        let detail = await this.clickAt(msg, btn.row, btn.col, peer);
+        // Chờ chi tiết thật nếu latest stale
+        if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(String(detail?.message || detail?.text || ''))) {
+          detail = (await this.findDetailMessage(peer)) || detail;
+        }
+        let body = String(detail?.message || detail?.text || '');
+        if (this.detailMatchesItem(body, fields)) {
+          return { detail, body, page, msg };
+        }
+        const info = bodyAmountInfo(body);
+        if (info && fields.amountDigits && info.digits === fields.amountDigits) {
+          const wantT = this.resolveContentTime('', fields);
+          const gotT = extractContentTime(body, this.keepSeconds);
+          if ((wantT && gotT && wantT === gotT) || page === 1) {
+            return { detail, body, page, msg };
+          }
+        }
+        msg = await this.returnToTransactionList(detail, peer, { afterEdit: false });
+        const backNav = await this.goToTxPageSafe(msg, peer, page);
+        msg = backNav.msg;
+      }
+
+      if (knownTotal != null && page >= knownTotal) break;
+      const flat2 = await this.getButtons(msg);
+      const nextBtn = this.findPagerNextSafe(flat2);
+      if (!nextBtn) break;
+      const before = this.parseLsgdPage(msg)?.page || page;
+      msg = await this.clickButton(msg, nextBtn.text, peer);
+      await sleep(700);
+      msg =
+        (await this.findTxListMessage(peer)) ||
+        (await this.getLatestMessage(peer)) ||
+        msg;
+      const after = this.parseLsgdPage(msg);
+      if (!after || after.page <= before) break;
+      page = after.page;
+      if (after.total) knownTotal = after.total;
+    }
+
+    await this.notify(
+      controlChatId,
+      `⚠️ Không thấy GD khớp tiền ${fields.amountDigits || '?'} (đã về trang 1 rồi quét).`,
+      replyTo
+    );
+    return null;
+  }
+
+  /** /wf1 + list: tự chọn TK theo SĐT (còn hạn → hết hạn) rồi vào LSGD. */
+  async autoPickAccountByPhone(controlChatId, items, replyTo) {
+    const phones = this.phonesFromItems(items);
+    if (!phones.length) throw new Error('List không có SĐT để chọn tài khoản.');
+    const peerCfg = this.getBotPeerConfig();
+    const peer = await this.resolvePeer(peerCfg);
+    const session = {
+      phase: 'processing',
+      mode: 'annotated_list',
+      peerCfg,
+      peer,
+      controlChatId: String(controlChatId),
+      replyTo,
+      items,
+      stats: { fixed: 0, skipped: 0, errors: 0, flipped: 0, fixedTime: 0, skippedFlip: 0, skippedTime: 0 },
+      cancel: false,
+    };
+    this.sessions.set(String(controlChatId), session);
+
+    await this.notify(
+      controlChatId,
+      `📤 ${this.label} list: tìm TK SĐT \`${phones.join(', ')}\`…`,
+      replyTo
+    );
+    await this.bot.client.sendMessage(peer, { message: '/start' });
+    await sleep(2000);
+    let msg = await this.getLatestMessage(peer);
+    if (!msg) throw new Error('Không nhận được tin từ bot sau /start');
+    msg = await this.clickIndex(msg, 0, peer);
+    msg = await this.clickIndex(msg, 1, peer);
+
+    const flatFilters = await this.getButtons(msg);
+    const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
+    if (!filterBtns.length) {
+      throw new Error(
+        `Không thấy còn hạn/hết hạn. Buttons: ${flatFilters.map((b) => b.text).join(' | ') || '(không)'}`
+      );
+    }
+    const ordered = [...filterBtns].sort((a, b) => {
+      const score = (t) =>
+        /c[oò]n\s*h[aạ]n/i.test(t) ? 0 : /h[eế]t\s*h[aạ]n/i.test(t) ? 1 : 2;
+      return score(a.text) - score(b.text);
+    });
+
+    for (let fi = 0; fi < ordered.length; fi++) {
+      const filterBtn = ordered[fi];
+      await this.notify(
+        controlChatId,
+        `🔎 Thử «${filterBtn.text}» — SĐT ${phones.join(', ')}…`,
+        replyTo
+      );
+      msg = session.lastMsg || (await this.getLatestMessage(peer));
+      const flatNow = await this.getButtons(msg);
+      if (!flatNow.some((b) => BTN.accountFilter.test(b.text))) {
+        const back = findButton(flatNow, BTN.back);
+        if (back) {
+          msg = await this.clickButton(msg, back.text, peer);
+          await sleep(700);
+        }
+      }
+      msg = await this.clickButton(msg, filterBtn.text, peer);
+      await sleep(800);
+      const flatAcc = await this.getButtons(msg);
+      const accountBtns = flatAcc.filter(
+        (b) => !BTN.back.test(b.text) && !BTN.accountFilter.test(b.text)
+      );
+      const match = accountBtns.find((b) => this.accountMatchesPhones(b.text, phones));
+      if (match) {
+        session.chosenAccount = match.text;
+        session.chosenAccountFilter = filterBtn.text;
+        session.lastMsg = msg;
+        session.accountButtons = accountBtns.map((b, i) => ({
+          index: i,
+          text: b.text,
+          row: b.row,
+          col: b.col,
+        }));
+        await this.notify(
+          controlChatId,
+          `✅ ${filterBtn.text}\n→ TK: ${match.text}`,
+          replyTo
+        );
+        msg = await this.clickButton(msg, match.text, peer);
+        const flatAfter = await this.getButtons(msg);
+        if (findButton(flatAfter, BTN.editTxMenu)) {
+          msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+        }
+        await this.notify(controlChatId, '👆 Chỉnh giao dịch…', replyTo);
+        msg = await this.clickButton(msg, BTN.editTx, peer);
+        session.listMsg = msg;
+        session.lastMsg = msg;
+        return session;
+      }
+      const backBtn =
+        findButton(flatAcc, BTN.back) ||
+        findButton(await this.getButtons(msg), BTN.back);
+      if (backBtn && fi < ordered.length - 1) {
+        msg = await this.clickButton(msg, backBtn.text, peer);
+        await sleep(800);
+        session.lastMsg = msg;
+      }
+    }
+    throw new Error(
+      `Không tìm thấy tài khoản cùng SĐT ${phones.join(', ')} ở còn hạn lẫn hết hạn.`
+    );
+  }
+
+  async startAnnotatedListRepair(rawText, chatId, messageId) {
+    if (!this.getBotPeerConfig()) {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        `❌ Chưa đặt bot. Dùng: \`${this.cmdBot} @bot\`.`
+      );
+      return;
+    }
+    if (this.getSession(chatId)?.phase === 'processing') {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        `⏳ ${this.label} đang chạy — \`${this.cmd} off\` rồi gửi lại.`
+      );
+      return;
+    }
+
+    let items;
+    try {
+      items = extractAnnotatedItems(rawText);
+    } catch (e) {
+      await this.bot.sendReply(chatId, messageId, `❌ Format list: ${e.message}`);
+      return;
+    }
+    if (!items.length || !listHasPhone(items)) {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        '❗ Cần list `N. Cộng|Trừ` + `/bdsd …` có SĐT.'
+      );
+      return;
+    }
+
+    const nCong = items.filter((i) => i.kind === 'cong').length;
+    const nTru = items.filter((i) => i.kind === 'tru').length;
+    await this.notify(
+      chatId,
+      [
+        `🔧 **${this.label}** sửa theo list (logic pha B)`,
+        `${items.length} mục · Cộng ${nCong} · Trừ ${nTru}`,
+        'Tự chọn TK theo SĐT → Trừ (nếu cần) → sửa giờ.',
+      ].join('\n'),
+      messageId
+    );
+
+    this.runAnnotatedListRepair(chatId, items, messageId).catch(async (err) => {
+      this.clearSession(chatId);
+      await this.notify(chatId, `❌ ${this.label} lỗi: ${err.message}`, messageId);
+    });
+  }
+
+  async runAnnotatedListRepair(controlChatId, items, replyTo) {
+    const session = await this.autoPickAccountByPhone(controlChatId, items, replyTo);
+    const { peer } = session;
+    const total = items.length;
+    const gapMs = 1500;
+
+    for (let i = 0; i < items.length; i++) {
+      const s = this.getSession(controlChatId);
+      if (!s || s.cancel) {
+        await this.notify(controlChatId, `🛑 ${this.label} đã hủy.`, replyTo);
+        this.clearSession(controlChatId);
+        return;
+      }
+      const item = items[i];
+      const fields = parseBdsdFields(item.line);
+      const preview =
+        item.line.length > 100 ? item.line.slice(0, 97) + '…' : item.line;
+      const tag = item.kind === 'tru' ? 'Trừ' : 'Cộng';
+      await this.notify(
+        controlChatId,
+        `▶️ [${i + 1}/${total}] ${tag}\n\`${preview}\``,
+        replyTo
+      );
+
+      try {
+        const found = await this.findAndOpenListItem(s, fields, controlChatId);
+        if (!found) {
+          s.stats.errors += 1;
+          await sleep(gapMs);
+          continue;
+        }
+        let { detail, body, page } = found;
+        s.currentPage = page;
+
+        if (item.kind === 'tru') {
+          const info = bodyAmountInfo(body);
+          if (info && info.sign === '-') {
+            s.stats.skippedFlip += 1;
+            await this.notify(
+              controlChatId,
+              `⏭️ [${i + 1}] Đã là Trừ — bỏ qua đổi loại`,
+              replyTo
+            );
+          } else {
+            const confirmMsg = await this.editTypeToTru(detail, peer);
+            s.stats.flipped += 1;
+            await this.notify(
+              controlChatId,
+              `✅ [${i + 1}] Đã đổi → Trừ\n↩️ Quay lại → Sửa Thời Gian…`,
+              replyTo
+            );
+            const reopened = await this.afterFlipBackThenReopenForTime(
+              confirmMsg,
+              peer,
+              fields,
+              page,
+              s
+            );
+            detail = reopened.detail;
+            body = reopened.body;
+            page = reopened.page || page;
+            s.currentPage = page;
+          }
+        }
+
+        if (!(await this.messageHasTimeButton(detail))) {
+          const d2 = await this.findDetailMessage(peer);
+          if (d2) {
+            detail = d2;
+            body = String(detail.message || detail.text || '');
+          }
+        }
+
+        const contentTime = this.resolveContentTime(body, fields);
+        const fieldTime = this.extractFieldTime(body);
+        const rawField = extractFieldTimeRaw(body);
+        if (!contentTime) {
+          await this.notify(
+            controlChatId,
+            `⚠️ [${i + 1}] Không parse được giờ Nội dung — bỏ qua`,
+            replyTo
+          );
+        } else if (shouldSkipTimeEdit(contentTime, fieldTime, rawField, this.keepSeconds)) {
+          s.stats.skippedTime += 1;
+          s.stats.skipped += 1;
+          await this.notify(
+            controlChatId,
+            `⏭️ [${i + 1}] Giờ đã đúng (${contentTime})`,
+            replyTo
+          );
+        } else {
+          const fresh = await this.findDetailMessage(peer);
+          if (fresh) detail = fresh;
+          const beforeEditId = detail?.id || 0;
+          const oldTime =
+            this.extractFieldTime(String(detail?.message || detail?.text || '')) || null;
+          detail = await this.editTimeOnDetail(detail, peer, contentTime);
+          let rawAfter = extractFieldTimeRaw(String(detail?.message || detail?.text || ''));
+          let fieldAfter = this.extractFieldTime(String(detail?.message || detail?.text || ''));
+          if (
+            !fieldMatchesTarget(rawAfter, fieldAfter, contentTime, this.keepSeconds)
+          ) {
+            detail =
+              (await this.waitForUpdatedDetailTime(peer, contentTime, {
+                beforeId: beforeEditId,
+                oldTime,
+              })) || detail;
+            body = String(detail?.message || detail?.text || '');
+            rawAfter = extractFieldTimeRaw(body);
+            fieldAfter = this.extractFieldTime(body);
+          }
+          if (
+            !fieldMatchesTarget(rawAfter, fieldAfter, contentTime, this.keepSeconds)
+          ) {
+            throw new Error(
+              `Sau sửa vẫn lệch: \`${rawAfter || fieldAfter || '(trống)'}\` (cần \`${contentTime}\`)`
+            );
+          }
+          s.stats.fixedTime += 1;
+          s.stats.fixed += 1;
+          await this.notify(
+            controlChatId,
+            `✅ [${i + 1}] Giờ → ${contentTime}`,
+            replyTo
+          );
+        }
+
+        let listMsg = await this.returnToTransactionList(detail, peer, {
+          afterEdit: true,
+        });
+        const nav = await this.goToTxPageSafe(listMsg, peer, page || 1);
+        s.listMsg = nav.msg;
+        s.lastMsg = nav.msg;
+      } catch (e) {
+        s.stats.errors += 1;
+        await this.notify(controlChatId, `❌ [${i + 1}] ${e.message}`, replyTo);
+        try {
+          const latest = await this.getLatestMessage(peer);
+          let listMsg = await this.returnToTransactionList(latest, peer, {
+            afterEdit: false,
+          });
+          const nav = await this.goToTxPageSafe(listMsg, peer, s.currentPage || 1);
+          s.listMsg = nav.msg;
+        } catch (_e) {
+          /* ignore */
+        }
+      }
+      if (i < items.length - 1) await sleep(gapMs);
+    }
+
+    const done = this.getSession(controlChatId);
+    const st = done?.stats || {};
+    this.clearSession(controlChatId);
+    await this.notify(
+      controlChatId,
+      [
+        `🏁 ${this.label} list xong (${total} mục).`,
+        `Đổi Trừ: ${st.flipped || 0} (bỏ qua ${st.skippedFlip || 0})`,
+        `Sửa giờ: ${st.fixedTime || 0} (đã đúng ${st.skippedTime || 0})`,
+        `Lỗi: ${st.errors || 0}`,
+      ].join('\n'),
+      replyTo
+    );
+  }
 }
 
 module.exports = {
   WfRunner,
   Wf1Runner: WfRunner, // alias
   BTN,
+  BDSD_LINE,
+  KIND_LINE_RE,
+  extractAnnotatedItems,
+  extractWf4Items: extractAnnotatedItems,
+  looksLikeAnnotatedList,
+  looksLikeWf4List: looksLikeAnnotatedList,
+  parseBdsdFields,
+  contentNeedle,
+  listHasPhone,
+  listHasPhoneForPhaseB: listHasPhone,
+  isWf1AnnotatedRepairMessage,
   extractContentTime,
   extractFieldTime,
   extractFieldTimeRaw,

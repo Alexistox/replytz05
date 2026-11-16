@@ -24,6 +24,25 @@ Ba workflow **khác nhau**, mỗi cái một bot riêng.
 
 Luồng chung WF1/WF3: `/start` → button 1 → 2 → **user chọn còn hạn hoặc hết hạn** → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung → Quay lại → chờ bảng mới → Quay lại. Quét nhiều trang đến khi hết GD lệch.
 
+### `/wf1` + list Cộng/Trừ (logic pha B)
+
+Khi gửi **`/wf1` kèm list** `N. Cộng|Trừ` + `/bdsd …` **có SĐT**, WF1 tự:
+
+1. Chọn TK theo SĐT (còn hạn → hết hạn)
+2. Tìm GD theo số tiền
+3. Dòng **Trừ** → đổi loại + Quay lại
+4. Sửa giờ theo Nội dung
+
+Tin này **không** bị WF2/WF4 đang hearing nhận.
+
+```text
+/wf1
+1. Cộng
+/bdsd 0363… …
+2. Trừ
+/bdsd 0363… …
+```
+
 Hủy: `/wf1 off` hoặc `/wf3 off`
 
 ## WF2 — gửi lần lượt list `/bdsd` lên bot khác
