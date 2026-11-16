@@ -184,6 +184,14 @@ class Wf2BdsdRunner {
     // Có list /bdsd trong tin này
     const lines = extractBdsdLines(raw);
     if (lines.length) {
+      if (this.bot.wf4?.isActive?.(chatId)) {
+        await this.bot.sendReply(
+          chatId,
+          messageId,
+          '❌ WF4 đang bật trên chat này — `/wf4 off` rồi mới dùng WF2.'
+        );
+        return;
+      }
       await this.startBatch(lines, chatId, messageId);
       return;
     }
@@ -194,6 +202,14 @@ class Wf2BdsdRunner {
           chatId,
           messageId,
           '❌ Chưa đặt bot. Dùng: `/wf2bot @bot` rồi dán list `/bdsd …`.'
+        );
+        return;
+      }
+      if (this.bot.wf4?.isActive?.(chatId)) {
+        await this.bot.sendReply(
+          chatId,
+          messageId,
+          '❌ WF4 đang bật trên chat này — `/wf4 off` rồi mới dùng WF2.'
         );
         return;
       }
@@ -238,6 +254,9 @@ class Wf2BdsdRunner {
 
   /** Tin thường / tin list khi đang await_list, hoặc list thuần /bdsd */
   async handleIncomingList(chatId, messageText, messageId) {
+    if (this.bot.wf4?.isActive?.(chatId)) {
+      return false;
+    }
     if (this.isBusy(chatId)) {
       await this.notify(chatId, '⏳ WF2 đang gửi list trước — đợi xong hoặc `/wf2 off`.', messageId);
       return true;

@@ -9,6 +9,7 @@ const Ai = require('./ai');
 const ClaudeCode = require('./claude-code');
 const { WfRunner } = require('./workflow-wf1');
 const { Wf2BdsdRunner, isPureBdsdList } = require('./workflow-wf2');
+const { Wf4Runner, looksLikeWf4List } = require('./workflow-wf4');
 const { createControlServer } = require('./control-server');
 
 class BankTransactionUserbot {
@@ -36,6 +37,7 @@ class BankTransactionUserbot {
     this.wf1 = new WfRunner(this, { id: 'wf1', label: 'WF1', keepSeconds: false });
     this.wf2 = new Wf2BdsdRunner(this);
     this.wf3 = new WfRunner(this, { id: 'wf3', label: 'WF3', keepSeconds: true });
+    this.wf4 = new Wf4Runner(this);
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -527,21 +529,36 @@ class BankTransactionUserbot {
     this.processingMessages.add(messageKey);
 
     try {
-      // WF2: list thuần /bdsd… (không cần /wf2) — chặn trước parseCommand
-      if (
-        (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText)) &&
-        (await this.isWfCcAllowed(message, chatId))
-      ) {
-        const chatKeyWf2 = String(chatId);
-        const suppressUntilWf2 = this.claudeCodeSuppressOutUntil.get(chatKeyWf2) || 0;
-        if (!(message.out && Date.now() < suppressUntilWf2)) {
-          this.processedMessages.set(messageKey, currentTime);
-          const handledWf2 = await this.wf2.handleIncomingList(
-            chatId,
-            messageText,
-            messageId
-          );
-          if (handledWf2) return;
+      // WF4 / WF2: list /bdsd — route theo session (mutex, tránh cướp tin)
+      if (await this.isWfCcAllowed(message, chatId)) {
+        const chatKeyList = String(chatId);
+        const suppressUntilList = this.claudeCodeSuppressOutUntil.get(chatKeyList) || 0;
+        if (!(message.out && Date.now() < suppressUntilList)) {
+          if (
+            this.wf4.isAwaitingList(chatId) ||
+            (this.wf4.isActive(chatId) && looksLikeWf4List(messageText)) ||
+            (this.wf4.isAwaitingUserInput(chatId) && looksLikeWf4List(messageText))
+          ) {
+            this.processedMessages.set(messageKey, currentTime);
+            const handledWf4 = await this.wf4.handleIncomingList(
+              chatId,
+              messageText,
+              messageId
+            );
+            if (handledWf4) return;
+          }
+          if (
+            !this.wf4.isActive(chatId) &&
+            (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText))
+          ) {
+            this.processedMessages.set(messageKey, currentTime);
+            const handledWf2 = await this.wf2.handleIncomingList(
+              chatId,
+              messageText,
+              messageId
+            );
+            if (handledWf2) return;
+          }
         }
       }
 
@@ -600,7 +617,7 @@ class BankTransactionUserbot {
         }
       }
 
-      // WF1/WF3: đang chờ user chọn button tài khoản
+      // WF1/WF3/WF4: đang chờ user chọn filter / tài khoản
       if (
         messageText.trim() &&
         !String(messageText).startsWith('/') &&
@@ -609,8 +626,10 @@ class BankTransactionUserbot {
         const chatKeyWf = String(chatId);
         const suppressUntilWf = this.claudeCodeSuppressOutUntil.get(chatKeyWf) || 0;
         if (!(message.out && Date.now() < suppressUntilWf)) {
-          for (const runner of [this.wf1, this.wf3]) {
+          for (const runner of [this.wf1, this.wf3, this.wf4]) {
             if (!runner.isAwaitingUserInput(chatId)) continue;
+            // WF4 await_list xử lý ở block list phía trên
+            if (runner === this.wf4 && this.wf4.isAwaitingList(chatId)) continue;
             this.processedMessages.set(messageKey, currentTime);
             const handled = await runner.handleUserAccountPick(
               chatId,
@@ -1259,6 +1278,20 @@ class BankTransactionUserbot {
         }
         await this.wf3.handleWfCommand(args, chatId, messageId);
         break;
+
+      case '/wf4bot':
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF4')) {
+          return;
+        }
+        await this.wf4.handleWfBotCommand(args, chatId, messageId);
+        break;
+
+      case '/wf4':
+        if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF4')) {
+          return;
+        }
+        await this.wf4.handleWfCommand(args, chatId, messageId, messageText);
+        break;
     }
   }
 
@@ -1599,6 +1632,8 @@ Hỏi thẻ (卡, 银行卡, 要卡, 换卡, 卡号, ka): gửi "1", nhắn nhó
 /wf3 - WF3 giữ giây (admin nhóm)
 /wf2bot - Đặt bot /bdsd WF2 (admin nhóm)
 /wf2 - WF2 gửi list /bdsd (admin nhóm)
+/wf4bot @A @B - WF4: A nhận /bdsd, B chỉnh GD (admin nhóm)
+/wf4 - WF4 list Cộng/Trừ + /bdsd (không song song WF2)
 /cal - Máy tính toàn bot (👑 admin: /cal on | /cal on admin | /cal off; xem mục /cal phía trên)
 /status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại

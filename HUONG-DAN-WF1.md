@@ -22,7 +22,7 @@ Ba workflow **khác nhau**, mỗi cái một bot riêng.
 
 `151126-18:34:26` → chỉnh thành `15/11/2026 18:34:26` (giữ giây).
 
-Luồng chung WF1/WF3: `/start` → button 1 → 2 → tài khoản còn hạn → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung → Quay lại → chờ bảng mới → Quay lại. Quét nhiều trang đến khi hết GD lệch.
+Luồng chung WF1/WF3: `/start` → button 1 → 2 → **user chọn còn hạn hoặc hết hạn** → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung → Quay lại → chờ bảng mới → Quay lại. Quét nhiều trang đến khi hết GD lệch.
 
 Hủy: `/wf1 off` hoặc `/wf3 off`
 
@@ -50,3 +50,33 @@ rồi dán list ở tin tiếp theo; hoặc `/wf2` + list trong cùng một tin.
 Userbot gửi **từng** `/bdsd` lên bot WF2, chờ reply rồi mới gửi dòng kế.
 
 Hủy: `/wf2 off`
+
+## WF4 — gửi `/bdsd` lên bot A, chỉnh trên bot B
+
+Bot tạo GD qua `/bdsd` luôn ra **Cộng**. WF4: gửi từng lệnh lên **A**, rồi trên **B** sửa thời gian (như WF1, không giây). Dòng nhãn **Trừ** thêm bước đổi Cộng → Trừ.
+
+```text
+/wf4bot @BotTaoBdsd @BankAoGiaRe_Bot
+/wf4 on
+```
+
+**Chế độ ON liên tục** đến `/wf4 off`:
+1. `/wf4 on` → dán list/mục (chưa đụng B)
+2. Gửi hết batch lên **A**
+3. Bot B tự chọn: **còn hạn** → tìm TK cùng SĐT `/bdsd`; không thấy → **Quay lại** → **hết hạn** → tìm tiếp
+4. Trên B: dòng **Trừ** đổi loại + Quay lại sửa giờ; mọi dòng sửa giờ
+5. Xong batch vẫn ON — dán tiếp (đang bận thì xếp hàng)
+
+```text
+1. Cộng
+/bdsd …
+```
+rồi sau đó dán tiếp:
+```text
+2. Trừ
+/bdsd …
+```
+
+**Không** chạy WF2 và WF4 cùng một chat.
+
+Tắt: `/wf4 off`
