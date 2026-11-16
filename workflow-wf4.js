@@ -766,6 +766,144 @@ class Wf4Runner extends WfRunner {
     );
   }
 
+  /** Còn đang ở list TK (chưa vào menu sau khi chọn TK). */
+  isAccountListScreen(flat) {
+    const list = flat || [];
+    if (!list.length) return false;
+    if (list.some((b) => BTN.editTx.test(b.text) || BTN.editTxMenu.test(b.text))) {
+      return false;
+    }
+    const accounts = list.filter(
+      (b) =>
+        !BTN.back.test(b.text) &&
+        !BTN.accountFilter.test(b.text) &&
+        /\|\s*[A-Z]{2,}/.test(b.text)
+    );
+    return accounts.length > 0;
+  }
+
+  /** Bấm TK theo row/col đã lưu (ổn định hơn so với text dài). */
+  async clickChosenAccount(msg, peer, session) {
+    const chosen = session.chosenAccount;
+    const stored = (session.accountButtons || []).find((b) => b.text === chosen);
+    const flat = await this.getButtons(msg);
+    if (stored && Number.isInteger(stored.row) && Number.isInteger(stored.col)) {
+      const at = flat.find((b) => b.row === stored.row && b.col === stored.col);
+      if (at && at.text === chosen) {
+        Utils.log(
+          `${this.label} click TK theo vị trí [${stored.row},${stored.col}]: ${chosen}`
+        );
+        return this.clickAt(msg, stored.row, stored.col, peer);
+      }
+    }
+    const byText = findButton(flat, chosen);
+    if (byText) {
+      return this.clickAt(msg, byText.row, byText.col, peer);
+    }
+    // Fallback: khớp SĐT trong list hiện tại
+    const phones = this.phonesFromSessionItems(session);
+    const soft = flat.find((b) => this.accountMatchesPhones(b.text, phones));
+    if (soft) {
+      Utils.log(`${this.label} click TK soft-match: ${soft.text}`);
+      session.chosenAccount = soft.text;
+      return this.clickAt(msg, soft.row, soft.col, peer);
+    }
+    throw new Error(
+      `Không tìm thấy button TK.\nHiện có:\n${flat.map((b, i) => `${i + 1}. ${b.text}`).join('\n') || '(không có)'}`
+    );
+  }
+
+  /**
+   * Sau khi đã biết TK: bấm TK → chờ menu → Chỉnh sửa (nếu có) → Chỉnh Giao Dịch.
+   * BankAo đôi khi chậm cập nhật keyboard; phải poll/retry thay vì bấm edit ngay.
+   */
+  async openEditTxAfterAccount(controlChatId, msg) {
+    const session = this.getSession(controlChatId);
+    if (!session) throw new Error('Mất session khi mở chỉnh GD trên B');
+    const { peer, replyTo } = session;
+
+    msg = msg || session.lastMsg || (await this.getLatestMessage(peer));
+    let flat = await this.getButtons(msg);
+
+    // Đã sẵn menu chỉnh thì khỏi bấm lại TK
+    if (!findButton(flat, BTN.editTx) && !findButton(flat, BTN.editTxMenu)) {
+      await this.notify(
+        controlChatId,
+        `👆 Chọn TK: ${session.chosenAccount}`,
+        replyTo
+      );
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        msg = await this.clickChosenAccount(msg, peer, session);
+        await sleep(900);
+        // Ưu tiên tin có keyboard mới (bot hay edit cùng msg)
+        msg =
+          (await this.findMessageWithButtons(peer, (m, f) =>
+            !!(findButton(f, BTN.editTx) || findButton(f, BTN.editTxMenu) || this.isAccountListScreen(f))
+          )) ||
+          (await this.getLatestMessage(peer)) ||
+          msg;
+        flat = await this.getButtons(msg);
+        if (findButton(flat, BTN.editTx) || findButton(flat, BTN.editTxMenu)) break;
+        if (this.isAccountListScreen(flat) && attempt < 4) {
+          Utils.log(
+            `${this.label} sau click TK vẫn list TK (lần ${attempt}) — thử lại`
+          );
+          await sleep(700);
+          continue;
+        }
+        break;
+      }
+    }
+
+    flat = await this.getButtons(msg);
+    if (findButton(flat, BTN.editTxMenu)) {
+      await this.notify(controlChatId, '👆 Chỉnh sửa giao dịch…', replyTo);
+      msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+      await sleep(800);
+      msg = (await this.getLatestMessage(peer)) || msg;
+      flat = await this.getButtons(msg);
+    }
+
+    // Chờ nút Chỉnh Giao Dịch xuất hiện (keyboard cập nhật chậm)
+    for (let i = 0; i < 6; i++) {
+      flat = await this.getButtons(msg);
+      if (findButton(flat, BTN.editTx)) break;
+      const found = await this.findMessageWithButtons(peer, (_m, f) =>
+        !!findButton(f, BTN.editTx)
+      );
+      if (found) {
+        msg = found;
+        break;
+      }
+      await sleep(700);
+      msg = (await this.getLatestMessage(peer)) || msg;
+    }
+
+    flat = await this.getButtons(msg);
+    if (!findButton(flat, BTN.editTx)) {
+      throw new Error(
+        `Không tìm thấy button Chỉnh Giao Dịch sau khi chọn TK.\nHiện có:\n${flat.map((b, i) => `${i + 1}. ${b.text}`).join('\n') || '(không có)'}`
+      );
+    }
+
+    await this.notify(controlChatId, '👆 Chỉnh giao dịch…', replyTo);
+    msg = await this.clickButton(msg, BTN.editTx, peer);
+    await sleep(1000);
+    msg = (await this.ensureTxList(msg, peer)) || msg;
+    return msg;
+  }
+
+  async findMessageWithButtons(peer, pred, limit = 12) {
+    const msgs = await this.bot.client.getMessages(peer, { limit });
+    for (const m of msgs || []) {
+      if (!m) continue;
+      const flat = await this.getButtons(m);
+      if (!flat.length) continue;
+      if (pred(m, flat)) return m;
+    }
+    return null;
+  }
+
   /** Đã có TK B từ batch trước → vào lại LSGD; SĐT khác thì chọn lại */
   async resumeEditOnB(controlChatId) {
     const session = this.getSession(controlChatId);
@@ -801,18 +939,15 @@ class Wf4Runner extends WfRunner {
     try {
       msg = await this.ensureTxList(msg, peer);
     } catch (_e) {
-      msg = await this.getLatestMessage(peer);
       try {
-        msg = await this.clickButton(msg, session.chosenAccount, peer);
+        msg = await this.openEditTxAfterAccount(
+          controlChatId,
+          await this.getLatestMessage(peer)
+        );
       } catch (_e2) {
         await this.runUntilAccountPick(controlChatId, replyTo);
         return;
       }
-      const flat = await this.getButtons(msg);
-      if (findButton(flat, BTN.editTxMenu)) {
-        msg = await this.clickButton(msg, BTN.editTxMenu, peer);
-      }
-      msg = await this.clickButton(msg, BTN.editTx, peer);
     }
 
     session.lastMsg = msg;
@@ -824,23 +959,13 @@ class Wf4Runner extends WfRunner {
     });
   }
 
-  /** Sau khi A xong + user chọn TK: vào LSGD rồi chỉnh trên B */
+  /** Sau khi A xong + đã chọn TK: vào LSGD rồi chỉnh trên B */
   async continueAfterAccount(controlChatId) {
     const session = this.getSession(controlChatId);
     if (!session) return;
-    const { peer, replyTo } = session;
+    const { replyTo } = session;
 
-    let msg = session.lastMsg || (await this.getLatestMessage(peer));
-    msg = await this.clickButton(msg, session.chosenAccount, peer);
-
-    const flatAfterAccount = await this.getButtons(msg);
-    if (findButton(flatAfterAccount, BTN.editTxMenu)) {
-      await this.notify(controlChatId, '👆 Chỉnh sửa giao dịch…', replyTo);
-      msg = await this.clickButton(msg, BTN.editTxMenu, peer);
-    }
-
-    await this.notify(controlChatId, '👆 Chỉnh giao dịch…', replyTo);
-    msg = await this.clickButton(msg, BTN.editTx, peer);
+    const msg = await this.openEditTxAfterAccount(controlChatId);
 
     session.lastMsg = msg;
     session.listMsg = msg;
