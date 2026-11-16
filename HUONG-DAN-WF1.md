@@ -62,9 +62,10 @@ Bot tạo GD qua `/bdsd` luôn ra **Cộng**. WF4: gửi từng lệnh lên **A*
 
 **Chế độ ON liên tục** đến `/wf4 off`:
 1. `/wf4 on` → dán list/mục (chưa đụng B)
-2. Gửi hết batch lên **A** → rồi chỉnh **B** (lần đầu hỏi TK; lần sau dùng lại)
-3. Xong batch vẫn ON — dán mục/list tiếp (đang bận thì xếp hàng)
-4. Dòng **Trừ**: đổi loại; mọi dòng: sửa giờ
+2. Gửi hết batch lên **A**
+3. Bot B tự chọn: **còn hạn** → tìm TK cùng SĐT `/bdsd`; không thấy → **Quay lại** → **hết hạn** → tìm tiếp
+4. Trên B: dòng **Trừ** đổi loại + Quay lại sửa giờ; mọi dòng sửa giờ
+5. Xong batch vẫn ON — dán tiếp (đang bận thì xếp hàng)
 
 ```text
 1. Cộng

@@ -4,8 +4,8 @@
  * Luồng:
  * 1) /wf4 on → chờ dán list (chưa đụng B)
  * 2) Gửi hết /bdsd batch lên A
- * 3) A xong → lần đầu chọn TK trên B; lần sau tái dùng TK
- * 4) Trên B: Trừ flip + sửa giờ
+ * 3) A xong → B tự chọn còn hạn→TK cùng SĐT; không thấy thì hết hạn
+ * 4) Trên B: Trừ flip + Quay lại sửa giờ
  * 5) Xong batch → vẫn ON, nhận list tiếp (hoặc hàng đợi nếu đang bận)
  *
  * /wf4bot @botA @botB
@@ -392,40 +392,190 @@ class Wf4Runner extends WfRunner {
     await this.handleWfBotCommand(args, chatId, messageId);
   }
 
-  /** Mở B chọn TK nhưng GIỮ items/stats/TK từ pha A */
+  phonesFromSessionItems(session) {
+    const phones = [];
+    const seen = new Set();
+    for (const it of session?.items || []) {
+      const f = parseBdsdFields(it.line);
+      const d = String(f.phone || '').replace(/\D/g, '');
+      if (d && !seen.has(d)) {
+        seen.add(d);
+        phones.push(d);
+      }
+    }
+    return phones;
+  }
+
+  accountMatchesPhones(btnText, phones) {
+    const t = String(btnText || '');
+    if (!phones?.length) return false;
+    // Bỏ nút Quay lại
+    if (BTN.back.test(t) || /quay\s*l[aạ]i/i.test(t)) return false;
+    return phones.some((p) => p && t.includes(p));
+  }
+
+  /**
+   * Mở B, tự chọn còn hạn → tìm TK cùng SĐT;
+   * không thấy → Quay lại → hết hạn → tìm tiếp.
+   */
   async runUntilAccountPick(controlChatId, replyTo) {
     const prev = this.getSession(controlChatId) || {};
     const saved = {
-      items: prev.items,
+      items: prev.items || [],
       stats: prev.stats || emptyStats(),
       peerA: prev.peerA,
       replyTo: replyTo || prev.replyTo,
       totalSentA: prev.totalSentA || 0,
       queuedText: prev.queuedText,
-      chosenAccount: prev.chosenAccount,
-      listMsg: prev.listMsg,
     };
-    await super.runUntilAccountPick(controlChatId, saved.replyTo);
-    const s = this.getSession(controlChatId);
-    if (!s) return;
-    s.items = saved.items;
-    s.stats = saved.stats;
-    s.peerA = saved.peerA;
-    s.replyTo = saved.replyTo;
-    s.totalSentA = saved.totalSentA;
-    s.queuedText = saved.queuedText;
-    if (!s.items || !s.items.length) {
+    if (!saved.items.length) {
       throw new Error('Mất list sau pha A — hủy.');
     }
+
+    const phones = this.phonesFromSessionItems({ items: saved.items });
+    if (!phones.length) {
+      throw new Error('Không lấy được SĐT từ list /bdsd để chọn tài khoản.');
+    }
+
+    const peerCfg = this.getBotPeerConfig();
+    const peer = await this.resolvePeer(peerCfg);
+    this.sessions.set(String(controlChatId), {
+      phase: 'processing',
+      peerCfg,
+      peer,
+      controlChatId: String(controlChatId),
+      replyTo: saved.replyTo,
+      items: saved.items,
+      stats: saved.stats,
+      peerA: saved.peerA,
+      totalSentA: saved.totalSentA,
+      queuedText: saved.queuedText,
+      cancel: false,
+    });
+
+    await this.notify(
+      controlChatId,
+      `📤 Bot B: tìm TK khớp SĐT \`${phones.join(', ')}\`…`,
+      saved.replyTo
+    );
+    await this.bot.client.sendMessage(peer, { message: '/start' });
+    await sleep(2000);
+    let msg = await this.getLatestMessage(peer);
+    if (!msg) throw new Error('Không nhận được tin từ bot sau /start');
+
+    await this.notify(controlChatId, '👆 Bấm button đầu tiên…', saved.replyTo);
+    msg = await this.clickIndex(msg, 0, peer);
+    await this.notify(controlChatId, '👆 Bấm button thứ 2…', saved.replyTo);
+    msg = await this.clickIndex(msg, 1, peer);
+
+    const flatFilters = await this.getButtons(msg);
+    const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
+    if (!filterBtns.length) {
+      throw new Error(
+        `Không thấy còn hạn/hết hạn. Buttons: ${flatFilters.map((b) => b.text).join(' | ') || '(không)'}`
+      );
+    }
+
+    // Ưu tiên còn hạn trước, rồi hết hạn
+    const ordered = [...filterBtns].sort((a, b) => {
+      const score = (t) => (/c[oò]n\s*h[aạ]n/i.test(t) ? 0 : /h[eế]t\s*h[aạ]n/i.test(t) ? 1 : 2);
+      return score(a.text) - score(b.text);
+    });
+
+    const session = this.getSession(controlChatId);
+    session.lastMsg = msg;
+
+    for (let fi = 0; fi < ordered.length; fi++) {
+      const filterBtn = ordered[fi];
+      await this.notify(
+        controlChatId,
+        `🔎 Thử «${filterBtn.text}» — tìm SĐT ${phones.join(', ')}…`,
+        saved.replyTo
+      );
+
+      msg = session.lastMsg || (await this.getLatestMessage(peer));
+      // Đảm bảo đang ở màn filter (lần 2 sau Quay lại)
+      const flatNow = await this.getButtons(msg);
+      const onFilter = flatNow.some((b) => BTN.accountFilter.test(b.text));
+      if (!onFilter) {
+        // Thử Quay lại về filter
+        const back = findButton(flatNow, BTN.back);
+        if (back) {
+          msg = await this.clickButton(msg, back.text, peer);
+          await sleep(700);
+        }
+      }
+
+      msg = await this.clickButton(msg, filterBtn.text, peer);
+      await sleep(800);
+      const flatAcc = await this.getButtons(msg);
+      const accountBtns = flatAcc.filter(
+        (b) => !BTN.back.test(b.text) && !BTN.accountFilter.test(b.text)
+      );
+      const match = accountBtns.find((b) =>
+        this.accountMatchesPhones(b.text, phones)
+      );
+
+      if (match) {
+        session.chosenAccountFilter = filterBtn.text;
+        session.chosenAccount = match.text;
+        session.lastMsg = msg;
+        session.accountButtons = accountBtns.map((b, i) => ({
+          index: i,
+          text: b.text,
+          row: b.row,
+          col: b.col,
+        }));
+        await this.notify(
+          controlChatId,
+          `✅ ${filterBtn.text}\n→ TK: ${match.text}`,
+          saved.replyTo
+        );
+        await this.continueAfterAccount(controlChatId);
+        return;
+      }
+
+      await this.notify(
+        controlChatId,
+        `⚠️ «${filterBtn.text}» không có TK SĐT ${phones.join(', ')}`,
+        saved.replyTo
+      );
+
+      // Quay lại để thử filter còn lại
+      const backBtn = findButton(flatAcc, BTN.back) || findButton(await this.getButtons(msg), BTN.back);
+      if (backBtn && fi < ordered.length - 1) {
+        msg = await this.clickButton(msg, backBtn.text, peer);
+        await sleep(800);
+        session.lastMsg = msg;
+      }
+    }
+
+    throw new Error(
+      `Không tìm thấy tài khoản cùng SĐT ${phones.join(', ')} ở còn hạn lẫn hết hạn.`
+    );
   }
 
-  /** Đã có TK B từ batch trước → vào lại LSGD rồi chỉnh */
+  /** Đã có TK B từ batch trước → vào lại LSGD; SĐT khác thì chọn lại */
   async resumeEditOnB(controlChatId) {
     const session = this.getSession(controlChatId);
     if (!session || !session.peer || !session.chosenAccount) {
       await this.runUntilAccountPick(controlChatId, session?.replyTo);
       return;
     }
+    const phones = this.phonesFromSessionItems(session);
+    if (
+      phones.length &&
+      !this.accountMatchesPhones(session.chosenAccount, phones)
+    ) {
+      await this.notify(
+        controlChatId,
+        `🔄 SĐT batch mới khác TK cũ — chọn lại TK…`,
+        session.replyTo
+      );
+      await this.runUntilAccountPick(controlChatId, session.replyTo);
+      return;
+    }
+
     const { peer, replyTo } = session;
     await this.notify(
       controlChatId,
@@ -440,7 +590,6 @@ class Wf4Runner extends WfRunner {
     try {
       msg = await this.ensureTxList(msg, peer);
     } catch (_e) {
-      // Màn hình lệch — mở lại từ tài khoản
       msg = await this.getLatestMessage(peer);
       try {
         msg = await this.clickButton(msg, session.chosenAccount, peer);
