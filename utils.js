@@ -33,17 +33,18 @@ class Utils {
   static isTransactionMessage(messageText) {
     if (!messageText) return false;
 
-    // Tiếng Việt: đủ 4 trường (Tiền vào / Tài khoản / Lúc / Nội dung CK)
+    // Tiếng Việt: đủ 4 trường (Tiền vào|Tiền ra / Tài khoản / Lúc / Nội dung CK)
+    // Hỗ trợ cả + (cộng) và - (trừ)
     const vnPatterns = [
-      /Tiền vào:\s*\+[\d,]+\s*đ/i,
+      /(?:Tiền vào|Tiền ra):\s*[+\-−]?\s*[\d,]+\s*đ/i,
       /Tài khoản:\s*\d+\s*tại\s*\w+/i,
       /Lúc:\s*\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2}/i,
       /Nội dung CK:/i,
     ];
 
-    // Tiếng Trung (SMS/ngân hàng): 入款 / 账户 / 时间 / 备注 — hỗ trợ : hoặc ：
+    // Tiếng Trung: 入款 (vào) hoặc 出款 (ra) / 账户 / 时间 / 备注
     const cnPatterns = [
-      /入款[：:\uFF1A]\s*[+＋]?[\d,，．.\uFF0C]+\s*(?:元|块|CNY|￥)?/u,
+      /(?:入款|出款)[：:\uFF1A]\s*[+\-−＋]?\s*[\d,，．.\uFF0C]+\s*(?:元|块|CNY|￥)?/u,
       /账户[：:\uFF1A]\s*[\d\s*＊xXＸ\-\u2010‐]{4,}/u,
       /时间[：:\uFF1A]\s*(?:\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?::\d{2})?|\d{4}年\d{1,2}月\d{1,2}日\s*\d{1,2}:\d{2}(?::\d{2})?)/u,
       /备注[：:\uFF1A]/u,
@@ -52,6 +53,26 @@ class Utils {
     const vnOk = vnPatterns.every((p) => p.test(messageText));
     const cnOk = cnPatterns.every((p) => p.test(messageText));
     return vnOk || cnOk;
+  }
+
+  /**
+   * Giao dịch cộng (+) cần /1 reply "1".
+   * Giao dịch trừ (− / Tiền ra / 出款) → không reply.
+   */
+  static isCreditTransactionMessage(messageText) {
+    if (!messageText || !Utils.isTransactionMessage(messageText)) return false;
+
+    // VN: Tiền ra hoặc số âm → trừ
+    if (/Tiền\s*ra\s*:/i.test(messageText)) return false;
+    if (/(?:Tiền vào|Tiền ra):\s*[−\-]\s*[\d,]+\s*đ/i.test(messageText)) return false;
+    if (/Tiền vào:\s*\+/i.test(messageText)) return true;
+
+    // CN: 出款 → trừ; 入款 với dấu − → trừ; còn lại 入款 → cộng
+    if (/出款[：:\uFF1A]/u.test(messageText)) return false;
+    if (/入款[：:\uFF1A]\s*[−\-]/u.test(messageText)) return false;
+    if (/入款[：:\uFF1A]/u.test(messageText)) return true;
+
+    return false;
   }
 
   // Parse command từ tin nhắn (bỏ @BotUsername sau lệnh — Telegram hay gửi /cal@bot on)

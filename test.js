@@ -167,6 +167,53 @@ amountTests.forEach((test, index) => {
   else failCount++;
 });
 
+// /1 on: chỉ reply cộng (+), bỏ qua trừ (−)
+console.log('➕➖ Test credit vs debit (/1 reply):');
+console.log('====================================\n');
+
+const creditDebitTests = [
+  {
+    name: 'Cộng (+) → credit (reply 1)',
+    message: `Tiền vào: +2,000 đ
+Tài khoản: 1234567890 tại VCB
+Lúc: 2025-07-20 11:10:22
+Nội dung CK: test`,
+    isTx: true,
+    isCredit: true,
+  },
+  {
+    name: 'Trừ (−) → không credit (không reply 1)',
+    message: `Tiền vào: -2,000 đ
+Tài khoản: 1234567890 tại VCB
+Lúc: 2025-07-20 11:10:22
+Nội dung CK: test`,
+    isTx: true,
+    isCredit: false,
+  },
+  {
+    name: 'Tiền ra → không credit',
+    message: `Tiền ra: -5,000 đ
+Tài khoản: 1234567890 tại VCB
+Lúc: 2025-07-20 11:10:22
+Nội dung CK: test`,
+    isTx: true,
+    isCredit: false,
+  },
+];
+
+creditDebitTests.forEach((t, index) => {
+  const isTx = Utils.isTransactionMessage(t.message);
+  const isCredit = Utils.isCreditTransactionMessage(t.message);
+  const passed = isTx === t.isTx && isCredit === t.isCredit;
+  console.log(`Credit/Debit Test ${index + 1}: ${t.name}`);
+  console.log(
+    `Expected tx=${t.isTx} credit=${t.isCredit}, Got tx=${isTx} credit=${isCredit} - ${passed ? '✅ PASS' : '❌ FAIL'}`
+  );
+  console.log('');
+  if (passed) passCount++;
+  else failCount++;
+});
+
 // Test account info extraction
 console.log('🏦 Test Account Info Extraction:');
 console.log('===============================\n');
