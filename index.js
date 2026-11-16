@@ -536,6 +536,7 @@ class BankTransactionUserbot {
         if (!(message.out && Date.now() < suppressUntilList)) {
           if (
             this.wf4.isAwaitingList(chatId) ||
+            (this.wf4.isActive(chatId) && looksLikeWf4List(messageText)) ||
             (this.wf4.isAwaitingUserInput(chatId) && looksLikeWf4List(messageText))
           ) {
             this.processedMessages.set(messageKey, currentTime);

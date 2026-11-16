@@ -1,11 +1,12 @@
 /**
- * Workflow WF4 — gửi /bdsd lên bot A trước, xong mới chỉnh trên bot B.
+ * Workflow WF4 — chế độ ON liên tục đến /wf4 off.
  *
  * Luồng:
  * 1) /wf4 on → chờ dán list (chưa đụng B)
- * 2) Gửi hết /bdsd lên A (chờ reply từng dòng)
- * 3) A xong → chọn filter/TK trên B → LSGD
- * 4) Trên B: mọi dòng sửa giờ (WF1); dòng Trừ thêm đổi Cộng→Trừ
+ * 2) Gửi hết /bdsd batch lên A
+ * 3) A xong → lần đầu chọn TK trên B; lần sau tái dùng TK
+ * 4) Trên B: Trừ flip + sửa giờ
+ * 5) Xong batch → vẫn ON, nhận list tiếp (hoặc hàng đợi nếu đang bận)
  *
  * /wf4bot @botA @botB
  */
@@ -205,7 +206,7 @@ class Wf4Runner extends WfRunner {
           `🤖 WF4 bot B (chỉnh GD): \`${b}\``,
           '',
           'Đặt: `/wf4bot @botA @botB`',
-          'Chạy: `/wf4 on` rồi dán list `N. Cộng|Trừ` + `/bdsd …`',
+          'Chạy: `/wf4 on` rồi dán từng list/mục — bot giữ ON đến `/wf4 off`',
         ].join('\n')
       );
       return;
@@ -303,13 +304,13 @@ class Wf4Runner extends WfRunner {
         chatId,
         messageId,
         [
-          '**WF4** — gửi hết `/bdsd` lên A trước, xong mới chỉnh trên B',
+          '**WF4** — ON liên tục: dán list → A hết → B chỉnh; dán tiếp được',
           '',
-          '`/wf4bot @botA @botB` — A nhận bdsd, B chỉnh GD',
-          '`/wf4 on` — chờ dán list (chưa đụng B)',
-          'List: `1. Cộng` / `2. Trừ` + `/bdsd …`',
-          'Luồng: dán list → gửi hết A → chọn TK trên B → sửa Trừ/giờ',
-          '`/wf4 off` · `/wf4 status`',
+          '`/wf4bot @botA @botB`',
+          '`/wf4 on` — bật, chờ dán list (chưa đụng B)',
+          'List: `1. Cộng` / `2. Trừ` + `/bdsd …` (1 mục hoặc nhiều)',
+          'Xong 1 batch vẫn ON — dán batch/mục tiếp; `/wf4 off` tắt',
+          '`/wf4 status`',
           'Không chạy song song WF2 cùng chat.',
         ].join('\n')
       );
@@ -323,19 +324,47 @@ class Wf4Runner extends WfRunner {
         await this.bot.sendReply(chatId, messageId, `❌ ${e.message}`);
         return;
       }
-      if (this.isBusy(chatId) || this.isActive(chatId)) {
-        await this.bot.sendReply(
-          chatId,
-          messageId,
-          '⏳ WF4 đang chạy — `/wf4 off` để hủy.'
-        );
-        return;
-      }
       if (!this.getBotA() || !this.getBotB()) {
         await this.bot.sendReply(
           chatId,
           messageId,
           '❌ Chưa đặt 2 bot. Dùng: `/wf4bot @botA @botB` rồi `/wf4 on`.'
+        );
+        return;
+      }
+      if (this.isBusy(chatId)) {
+        await this.bot.sendReply(
+          chatId,
+          messageId,
+          '⏳ WF4 đang xử lý batch — đợi xong hoặc `/wf4 off`.'
+        );
+        return;
+      }
+      if (this.isActive(chatId)) {
+        const s = this.getSession(chatId);
+        if (
+          s.phase === 'await_account_filter' ||
+          s.phase === 'await_account'
+        ) {
+          await this.bot.sendReply(
+            chatId,
+            messageId,
+            '⏳ WF4 đang chờ chọn TK trên B — chọn xong rồi dán list tiếp.'
+          );
+          return;
+        }
+        s.phase = 'await_list';
+        s.replyTo = messageId;
+        await this.bot.sendReply(
+          chatId,
+          messageId,
+          [
+            '✅ WF4 vẫn **ON** — dán list/mục tiếp.',
+            s.chosenAccount
+              ? `TK B đang dùng: ${s.chosenAccount}`
+              : 'Lần đầu sau A sẽ hỏi chọn TK trên B.',
+            'Tắt: `/wf4 off`',
+          ].join('\n')
         );
         return;
       }
@@ -345,15 +374,16 @@ class Wf4Runner extends WfRunner {
         replyTo: messageId,
         controlChatId: String(chatId),
         stats: emptyStats(),
+        totalSentA: 0,
       });
       await this.bot.sendReply(
         chatId,
         messageId,
         [
-          `📥 WF4 sẵn sàng — **dán list** \`N. Cộng|Trừ\` + \`/bdsd …\``,
+          `📥 WF4 **ON** — dán list \`N. Cộng|Trừ\` + \`/bdsd …\``,
           `A=\`${this.getBotA()}\` · B=\`${this.getBotB()}\``,
-          'Bot sẽ gửi hết lên A trước, xong mới sang B chọn TK.',
-          'Hủy: `/wf4 off`',
+          'Mỗi lần dán: gửi A hết → chỉnh B. Xong vẫn ON, dán tiếp được.',
+          'Tắt: `/wf4 off`',
         ].join('\n')
       );
       return;
@@ -362,7 +392,7 @@ class Wf4Runner extends WfRunner {
     await this.handleWfBotCommand(args, chatId, messageId);
   }
 
-  /** Mở B chọn TK nhưng GIỮ items/stats từ pha A */
+  /** Mở B chọn TK nhưng GIỮ items/stats/TK từ pha A */
   async runUntilAccountPick(controlChatId, replyTo) {
     const prev = this.getSession(controlChatId) || {};
     const saved = {
@@ -370,6 +400,10 @@ class Wf4Runner extends WfRunner {
       stats: prev.stats || emptyStats(),
       peerA: prev.peerA,
       replyTo: replyTo || prev.replyTo,
+      totalSentA: prev.totalSentA || 0,
+      queuedText: prev.queuedText,
+      chosenAccount: prev.chosenAccount,
+      listMsg: prev.listMsg,
     };
     await super.runUntilAccountPick(controlChatId, saved.replyTo);
     const s = this.getSession(controlChatId);
@@ -378,9 +412,56 @@ class Wf4Runner extends WfRunner {
     s.stats = saved.stats;
     s.peerA = saved.peerA;
     s.replyTo = saved.replyTo;
+    s.totalSentA = saved.totalSentA;
+    s.queuedText = saved.queuedText;
     if (!s.items || !s.items.length) {
       throw new Error('Mất list sau pha A — hủy.');
     }
+  }
+
+  /** Đã có TK B từ batch trước → vào lại LSGD rồi chỉnh */
+  async resumeEditOnB(controlChatId) {
+    const session = this.getSession(controlChatId);
+    if (!session || !session.peer || !session.chosenAccount) {
+      await this.runUntilAccountPick(controlChatId, session?.replyTo);
+      return;
+    }
+    const { peer, replyTo } = session;
+    await this.notify(
+      controlChatId,
+      `♻️ Dùng lại TK B: ${session.chosenAccount}\n🔧 Chỉnh batch này trên B…`,
+      replyTo
+    );
+
+    let msg =
+      session.listMsg ||
+      session.lastMsg ||
+      (await this.getLatestMessage(peer));
+    try {
+      msg = await this.ensureTxList(msg, peer);
+    } catch (_e) {
+      // Màn hình lệch — mở lại từ tài khoản
+      msg = await this.getLatestMessage(peer);
+      try {
+        msg = await this.clickButton(msg, session.chosenAccount, peer);
+      } catch (_e2) {
+        await this.runUntilAccountPick(controlChatId, replyTo);
+        return;
+      }
+      const flat = await this.getButtons(msg);
+      if (findButton(flat, BTN.editTxMenu)) {
+        msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+      }
+      msg = await this.clickButton(msg, BTN.editTx, peer);
+    }
+
+    session.lastMsg = msg;
+    session.listMsg = msg;
+    session.phase = 'editing_b';
+    this.runEditAllOnB(controlChatId).catch(async (err) => {
+      await this.notify(controlChatId, `❌ WF4 lỗi B: ${err.message}`, replyTo);
+      await this.returnToAwaitList(controlChatId, null);
+    });
   }
 
   /** Sau khi A xong + user chọn TK: vào LSGD rồi chỉnh trên B */
@@ -412,9 +493,43 @@ class Wf4Runner extends WfRunner {
     );
 
     this.runEditAllOnB(controlChatId).catch(async (err) => {
-      this.clearSession(controlChatId);
       await this.notify(controlChatId, `❌ WF4 lỗi B: ${err.message}`, replyTo);
+      await this.returnToAwaitList(controlChatId, null);
     });
+  }
+
+  /** Xong batch → vẫn ON, nhận list tiếp / chạy hàng đợi */
+  async returnToAwaitList(controlChatId, summaryLines) {
+    const s = this.getSession(controlChatId);
+    if (!s) return;
+    if (s.cancel) {
+      this.clearSession(controlChatId);
+      return;
+    }
+    const queued = s.queuedText;
+    delete s.queuedText;
+    s.phase = 'await_list';
+    s.items = [];
+    s.cancel = false;
+
+    if (summaryLines && summaryLines.length) {
+      await this.notify(
+        controlChatId,
+        [...summaryLines, '', '📥 WF4 vẫn **ON** — dán list/mục tiếp (hoặc `/wf4 off`).'].join(
+          '\n'
+        ),
+        s.replyTo
+      );
+    }
+
+    if (queued && looksLikeWf4List(queued)) {
+      await this.notify(
+        controlChatId,
+        '▶️ Có list xếp hàng — chạy tiếp…',
+        s.replyTo
+      );
+      await this.startPhaseA(queued, controlChatId, s.replyTo);
+    }
   }
 
   async handleIncomingList(chatId, messageText, messageId) {
@@ -422,6 +537,15 @@ class Wf4Runner extends WfRunner {
     if (!session) return false;
 
     if (this.isBusy(chatId)) {
+      if (looksLikeWf4List(messageText)) {
+        session.queuedText = messageText;
+        await this.notify(
+          chatId,
+          '📥 Đã xếp hàng list tiếp — chạy ngay sau khi xong batch hiện tại.',
+          messageId
+        );
+        return true;
+      }
       await this.notify(chatId, '⏳ WF4 đang xử lý — đợi hoặc `/wf4 off`.', messageId);
       return true;
     }
@@ -431,6 +555,15 @@ class Wf4Runner extends WfRunner {
       session.phase === 'await_account_filter' ||
       session.phase === 'await_account'
     ) {
+      if (looksLikeWf4List(messageText)) {
+        session.queuedText = messageText;
+        await this.notify(
+          chatId,
+          '📥 Đã xếp hàng list — chọn TK trên B xong sẽ chạy tiếp.',
+          messageId
+        );
+        return true;
+      }
       await this.notify(
         chatId,
         '❗ A đã xong — hãy chọn còn/hết hạn hoặc tài khoản trên B (số/tên button).',
@@ -470,6 +603,17 @@ class Wf4Runner extends WfRunner {
     }
 
     const session = this.getSession(controlChatId) || {};
+    // Giữ TK B / peer để batch sau không hỏi lại
+    const keepB = {
+      chosenAccount: session.chosenAccount,
+      chosenAccountFilter: session.chosenAccountFilter,
+      peer: session.peer,
+      peerCfg: session.peerCfg,
+      listMsg: session.listMsg,
+      lastMsg: session.lastMsg,
+      totalSentA: session.totalSentA || 0,
+      queuedText: session.queuedText,
+    };
     session.phase = 'sending_a';
     session.peerA = peerA;
     session.items = items;
@@ -477,6 +621,7 @@ class Wf4Runner extends WfRunner {
     session.controlChatId = String(controlChatId);
     session.cancel = false;
     session.stats = emptyStats();
+    Object.assign(session, keepB);
     this.sessions.set(String(controlChatId), session);
 
     const nCong = items.filter((i) => i.kind === 'cong').length;
@@ -697,21 +842,28 @@ class Wf4Runner extends WfRunner {
       return;
     }
 
+    s.totalSentA = (s.totalSentA || 0) + (s.stats.sentA || 0);
+
     await this.notify(
       controlChatId,
       [
         `🏁 Pha A xong: gửi ${s.stats.sentA || 0}/${total} · lỗi ${s.stats.errors || 0}`,
-        `➡️ Sang Bot B (\`${this.getBotB()}\`) — chọn TK để chỉnh Trừ/giờ…`,
+        s.chosenAccount
+          ? `➡️ Sang B (TK: ${s.chosenAccount})…`
+          : `➡️ Sang Bot B (\`${this.getBotB()}\`) — chọn TK…`,
       ].join('\n'),
       replyTo
     );
 
-    // Giữ items/stats, mở B chọn TK
     try {
-      await this.runUntilAccountPick(controlChatId, replyTo);
+      if (s.chosenAccount && s.peer) {
+        await this.resumeEditOnB(controlChatId);
+      } else {
+        await this.runUntilAccountPick(controlChatId, replyTo);
+      }
     } catch (err) {
-      this.clearSession(controlChatId);
       await this.notify(controlChatId, `❌ WF4 lỗi mở B: ${err.message}`, replyTo);
+      await this.returnToAwaitList(controlChatId, null);
     }
   }
 
@@ -841,18 +993,13 @@ class Wf4Runner extends WfRunner {
 
     const done = this.getSession(controlChatId);
     const st = done?.stats || {};
-    this.clearSession(controlChatId);
-    await this.notify(
-      controlChatId,
-      [
-        `🏁 WF4 xong (${total} mục).`,
-        `Gửi A: ${st.sentA || 0}`,
-        `Đổi Trừ: ${st.flipped || 0} (bỏ qua ${st.skippedFlip || 0})`,
-        `Sửa giờ: ${st.fixedTime || 0} (đã đúng ${st.skippedTime || 0})`,
-        `Lỗi: ${st.errors || 0}`,
-      ].join('\n'),
-      replyTo
-    );
+    await this.returnToAwaitList(controlChatId, [
+      `🏁 Batch xong (${total} mục).`,
+      `Gửi A (batch): ${st.sentA || 0}`,
+      `Đổi Trừ: ${st.flipped || 0} (bỏ qua ${st.skippedFlip || 0})`,
+      `Sửa giờ: ${st.fixedTime || 0} (đã đúng ${st.skippedTime || 0})`,
+      `Lỗi: ${st.errors || 0}`,
+    ]);
   }
 }
 
