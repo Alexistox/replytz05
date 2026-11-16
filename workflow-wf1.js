@@ -844,7 +844,7 @@ class WfRunner {
 
       const flat = await this.getButtons(msg);
       if (cur < target) {
-        const next = this.findPagerNext(flat);
+        const next = findButton(flat, BTN.nextPage);
         if (!next) {
           Utils.log(`${this.label} goToTxPage: hết nút Sau tại trang ${cur} (cần ${target})`);
           return { msg, page: cur, total };
@@ -862,7 +862,7 @@ class WfRunner {
         continue;
       }
 
-      const prev = this.findPagerPrev(flat);
+      const prev = findButton(flat, BTN.prevPage);
       if (!prev) {
         return { msg, page: cur, total };
       }
@@ -1013,61 +1013,14 @@ class WfRunner {
     return (await this.ensureTxList(msg, peer)) || msg;
   }
 
-  /**
-   * Nút Trước/Sau phân trang — không dùng ⬅️ chung với Quay lại.
-   */
-  findPagerPrev(flat) {
-    const list = flat || [];
-    return (
-      list.find((b) =>
-        /tr[uư][oớ]c|prev|before|trang\s*tr[uư][oớ]c|v[eề]\s*tr[uư][oớ]c/i.test(b.text)
-      ) ||
-      list.find((b) => /^\s*«\s*$/.test(b.text) || /^\s*‹\s*$/.test(b.text)) ||
-      null
-    );
-  }
-
-  findPagerNext(flat) {
-    const list = flat || [];
-    return (
-      list.find((b) =>
-        /ti[eế]p(\s*theo)?|next|sau|trang\s*sau|xem\s*th[eê]m|giao\s*d[iị]ch\s*ti[eế]p/i.test(
-          b.text
-        )
-      ) ||
-      list.find((b) => /^\s*»\s*$/.test(b.text) || /^\s*›\s*$/.test(b.text)) ||
-      null
-    );
-  }
-
-  /** Về trang 1 của list GD (bấm Trước đến Trang 1/N — GD mới thường ở đây). */
+  /** Về trang 1 của list GD (bấm Trước đến hết). */
   async goToFirstTxPage(msg, peer) {
-    const Utils = require('./utils');
-    msg = await this.ensureTxList(msg, peer);
-    for (let i = 0; i < 20; i++) {
-      const info = this.parseLsgdPage(msg);
-      const cur = info?.page;
-      if (cur === 1) {
-        Utils.log(`${this.label} LSGD đã ở trang 1/${info.total || '?'}`);
-        return msg;
-      }
+    for (let i = 0; i < 15; i++) {
       const flat = await this.getButtons(msg);
-      const prev = this.findPagerPrev(flat);
-      if (!prev) {
-        Utils.log(
-          `${this.label} goToFirstTxPage: không còn nút Trước (page=${cur || '?'})`
-        );
-        break;
-      }
-      Utils.log(
-        `${this.label} LSGD trang ${cur || '?'} → bấm Trước «${prev.text}» về trang 1`
-      );
+      const prev = findButton(flat, BTN.prevPage);
+      if (!prev) break;
       msg = await this.clickButton(msg, prev.text, peer);
-      await sleep(600);
-      msg =
-        (await this.findTxListMessage(peer)) ||
-        (await this.getLatestMessage(peer)) ||
-        msg;
+      await sleep(500);
     }
     return msg;
   }
@@ -1381,73 +1334,8 @@ class WfRunner {
     return this.returnToTransactionList(msg, peer, { afterEdit: false });
   }
 
-  /**
-   * Sau sửa giờ: chờ tin chi tiết MỚI (id > beforeId) có Thời gian = target.
-   * Tránh lấy lại tin cũ vẫn còn Quay lại nhưng giờ chưa đổi.
-   */
-  async waitForUpdatedDetailTime(peer, targetTime, { beforeId = 0, oldTime = null } = {}) {
-    const Utils = require('./utils');
-    let lastSeen = null;
-    for (let i = 0; i < 10; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
-      for (const m of msgs || []) {
-        if (!m || (beforeId && m.id <= beforeId)) continue;
-        const body = String(m.message || m.text || '');
-        if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
-        const flat = await this.getButtons(m);
-        if (!findButton(flat, BTN.back)) continue;
-        // Chỉ tin dòng "Thời gian:" — không lấy nhầm giờ trong Nội dung
-        const raw = extractFieldTimeRaw(body);
-        if (!raw) continue;
-        const field = extractFieldTime(`Thời gian: ${raw}`, this.keepSeconds);
-        lastSeen = m;
-        if (fieldMatchesTarget(raw, field, targetTime, this.keepSeconds)) {
-          Utils.log(
-            `${this.label} chi tiết mới #${m.id}: Thời gian=${raw || field} (đúng ${targetTime})`
-          );
-          return m;
-        }
-        // Đã đổi khác oldTime và khớp phần ngày+giờ không giây
-        if (
-          oldTime &&
-          field &&
-          field !== oldTime &&
-          String(field).replace(/:\d{2}$/, '') ===
-            String(targetTime).replace(/:\d{2}$/, '')
-        ) {
-          Utils.log(`${this.label} chi tiết mới #${m.id}: Thời gian=${field} (soft)`);
-          return m;
-        }
-      }
-      // Cũng thử tin edit tại chỗ (cùng id) nếu text đã đổi
-      if (beforeId) {
-        for (const m of msgs || []) {
-          if (!m || m.id !== beforeId) continue;
-          const body = String(m.message || m.text || '');
-          if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
-          const raw = extractFieldTimeRaw(body);
-          const field = extractFieldTime(body, this.keepSeconds);
-          if (fieldMatchesTarget(raw, field, targetTime, this.keepSeconds)) {
-            Utils.log(`${this.label} chi tiết edit tại chỗ #${m.id}: ${raw || field}`);
-            return m;
-          }
-        }
-      }
-      await sleep(700);
-    }
-    Utils.log(
-      `${this.label} waitForUpdatedDetailTime: chưa thấy giờ=${targetTime}, trả lastSeen`
-    );
-    return lastSeen;
-  }
-
   async editTimeOnDetail(detailMsg, peer, newTime) {
     let msg = detailMsg;
-    const beforeId = detailMsg?.id || 0;
-    const oldBody = String(detailMsg?.message || detailMsg?.text || '');
-    const oldTime =
-      extractFieldTime(oldBody, this.keepSeconds) || extractFieldTimeRaw(oldBody) || null;
-
     const flat = await this.getButtons(msg);
     const labels = flat.map((b) => b.text);
     const Utils = require('./utils');
@@ -1456,10 +1344,7 @@ class WfRunner {
     // Chỉ bấm button đúng "Thời gian" (ưu tiên khớp chính xác / bắt đầu bằng)
     const timeBtn =
       flat.find((b) => /^⏰?\s*th[oờ]i\s*gian\b/i.test(b.text)) ||
-      flat.find((b) =>
-        /th[oờ]i\s*gian/i.test(b.text) &&
-        !/ng[uư][oờ]i|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(b.text)
-      ) ||
+      flat.find((b) => /th[oờ]i\s*gian/i.test(b.text) && !/ng[uư][oờ]i|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(b.text)) ||
       null;
     if (!timeBtn) {
       throw new Error(
@@ -1470,80 +1355,30 @@ class WfRunner {
     msg = await this.clickButton(msg, timeBtn.text, peer);
 
     const prompt = String(msg?.message || msg?.text || '');
-    if (
-      /t[eê]n\s*ng[uư][oờ]i|ng[uư][oờ]i\s*chuy[eể]n|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(
-        prompt
-      ) &&
-      !/th[oờ]i\s*gian/i.test(prompt)
-    ) {
+    if (/t[eê]n\s*ng[uư][oờ]i|ng[uư][oờ]i\s*chuy[eể]n|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(prompt) && !/th[oờ]i\s*gian/i.test(prompt)) {
       throw new Error(
         `Nhầm field (bot hỏi: ${prompt.slice(0, 80)}) — abort trước khi gửi giá trị.`
       );
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(1000);
+    await sleep(1500);
 
-    // BankAo: sau khi nhập giờ phải Quay lại ở TIN MỚI NHẤT mới commit/cập nhật giờ
-    let newestWithBack = null;
-    for (let i = 0; i < 10; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
-      for (const m of msgs || []) {
-        if (!m || (beforeId && m.id <= beforeId)) continue;
-        const body = String(m.message || m.text || '');
-        // Bỏ qua prompt nhập nếu chưa có keyboard Quay lại
-        const flatM = await this.getButtons(m);
-        const back = findButton(flatM, BTN.back) || findButton(flatM, BTN.backLoose);
-        if (!back) continue;
-        // Ưu tiên tin mới nhất có Quay lại (chi tiết / xác nhận / sau nhập giờ)
-        newestWithBack = m;
-        break;
-      }
-      if (newestWithBack) break;
-      await sleep(600);
-    }
-
-    if (newestWithBack) {
-      const flatN = await this.getButtons(newestWithBack);
-      const backBtn =
-        findButton(flatN, BTN.back) || findButton(flatN, BTN.backLoose);
-      Utils.log(
-        `${this.label} sau nhập giờ → Quay lại tin mới #${newestWithBack.id}: ${backBtn.text}`
-      );
-      await this.clickButton(newestWithBack, backBtn.text, peer);
-      await sleep(1200);
-    } else {
-      Utils.log(`${this.label} sau nhập giờ: chưa thấy tin mới có Quay lại`);
-    }
-
-    // Sau Quay lại mới đọc chi tiết có giờ đã cập nhật (không tin cũ)
-    const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
-      beforeId,
-      oldTime,
-    });
-    if (updated) return updated;
-
-    // Fallback: tin mới nhất là chi tiết, giờ đã đổi
+    // Lấy tin mới nhất có Quay lại (màn chi tiết), bỏ qua tin "Nhập giá trị…" không keyboard
     for (let i = 0; i < 5; i++) {
       const latest = await this.getLatestMessage(peer);
       const body = String(latest?.message || latest?.text || '');
       const flatLatest = await this.getButtons(latest);
-      if (
-        /S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body) &&
-        findButton(flatLatest, BTN.back)
-      ) {
-        const raw = extractFieldTimeRaw(body);
-        const field = extractFieldTime(body, this.keepSeconds);
-        if (fieldMatchesTarget(raw, field, newTime, this.keepSeconds)) {
-          return latest;
-        }
-        // Cùng id detail bị edit tại chỗ
-        if (field && oldTime && field !== oldTime) return latest;
+      if (findButton(flatLatest, BTN.back)) return latest;
+      if (/nh[aậ]p\s*gi[aá]\s*tr[iị]/i.test(body) && !findButton(flatLatest, BTN.back)) {
+        // Vẫn đang ở prompt — tìm msg chi tiết gần nhất có Quay lại
+        const withBack = await this.findMessageWithBack(peer);
+        if (withBack) return withBack;
       }
       await sleep(700);
     }
     const withBack = await this.findMessageWithBack(peer);
-    if (withBack && (!beforeId || withBack.id >= beforeId)) return withBack;
+    if (withBack) return withBack;
     return this.getLatestMessage(peer);
   }
 }
