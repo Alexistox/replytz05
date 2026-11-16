@@ -1970,11 +1970,41 @@ class WfRunner {
       replyTo
     );
     await this.bot.client.sendMessage(peer, { message: '/start' });
-    await sleep(2000);
-    let msg = await this.getLatestMessage(peer);
-    if (!msg) throw new Error('Không nhận được tin từ bot sau /start');
+    await sleep(1500);
+    let msg = null;
+    for (let t = 0; t < 15; t++) {
+      const msgs = await this.bot.client.getMessages(peer, { limit: 10 });
+      for (const m of msgs || []) {
+        const flat = await this.getButtons(m);
+        if (flat.length >= 1) {
+          msg = m;
+          break;
+        }
+      }
+      if (msg) break;
+      await sleep(700);
+    }
+    if (!msg) throw new Error('Không nhận được tin/button từ bot sau /start');
     msg = await this.clickIndex(msg, 0, peer);
-    msg = await this.clickIndex(msg, 1, peer);
+    await sleep(800);
+    {
+      let ready = null;
+      for (let t = 0; t < 10; t++) {
+        const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+        for (const m of msgs || []) {
+          const flat = await this.getButtons(m);
+          if (flat.length >= 2) {
+            ready = m;
+            break;
+          }
+        }
+        if (ready) break;
+        await sleep(600);
+      }
+      msg = ready || (await this.getLatestMessage(peer)) || msg;
+    }
+    msg = await this.clickIndex(msg, Math.min(1, (await this.getButtons(msg)).length - 1), peer);
+    await sleep(800);
 
     const flatFilters = await this.getButtons(msg);
     const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
