@@ -4,8 +4,8 @@
  * Luồng:
  * 1) /wf4 on → chờ dán list (chưa đụng B)
  * 2) Gửi hết /bdsd batch lên A
- * 3) A xong → B tự chọn còn hạn→TK cùng SĐT; không thấy thì hết hạn
- * 4) Trên B: Trừ flip + Quay lại sửa giờ
+ * 3) Pha B = runAnnotatedListRepair (logic WF1 + /bdsd trên bot B)
+ * 4) /phab hoặc /wf1+list → chỉ pha B (cùng path), không gửi A
  * 5) Xong batch → vẫn ON, nhận list tiếp (hoặc hàng đợi nếu đang bận)
  *
  * /wf4bot @botA @botB

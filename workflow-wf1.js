@@ -798,16 +798,11 @@ class WfRunner {
   }
 
   /**
-   * /wf1|/wf2 on|off|status|help
-   * /wf1 + list Cộng/Trừ + /bdsd có SĐT → logic pha B (Trừ + sửa giờ theo list)
+   * /wf1|/wf3 on|off|status|help
+   * (/wf1 + list Cộng/Trừ → index route sang WF4 pha B, không xử lý ở đây)
    */
   async handleWfCommand(args, chatId, messageId, rawText = '') {
-    // List annotated + SĐT: học logic pha B — sửa theo từng mục, không quét mù
-    if (this.id === 'wf1' && isWf1AnnotatedRepairMessage(rawText || '')) {
-      await this.startAnnotatedListRepair(rawText, chatId, messageId);
-      return;
-    }
-
+    void rawText;
     const action = String(args[0] || 'help').toLowerCase();
     if (action === 'off' || action === 'stop' || action === 'cancel') {
       this.clearSession(chatId);
@@ -866,7 +861,7 @@ class WfRunner {
         `\`${this.cmdBot} @bot\` — đặt bot cho ${this.label}`,
         `\`${this.cmd} on\` — chạy workflow sửa thời gian GD`,
         this.id === 'wf1'
-          ? `\`/wf1\` + list \`N. Cộng|Trừ\` + \`/bdsd …\` (có SĐT) — sửa theo list (Trừ + giờ), logic pha B`
+          ? `\`/wf1\` + list \`N. Cộng|Trừ\` + \`/bdsd …\` (có SĐT) — vào **pha B WF4** (logic WF1+/bdsd trên bot B)`
           : '',
         `\`${this.cmd} off\` — hủy`,
         `\`${this.cmd} status\``,

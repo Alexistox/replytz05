@@ -1260,6 +1260,14 @@ class BankTransactionUserbot {
         if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF1')) {
           return;
         }
+        // /wf1 + list Cộng/Trừ + SĐT → pha B WF4 (logic WF1 + /bdsd trên bot B)
+        if (isWf1AnnotatedRepairMessage(messageText)) {
+          if (await this.denyIfNotWfCcAllowed(originalMessage, chatId, messageId, 'WF4')) {
+            return;
+          }
+          await this.wf4.handlePhabCommand(messageText, chatId, messageId);
+          break;
+        }
         await this.wf1.handleWfCommand(args, chatId, messageId, messageText);
         break;
 
@@ -1640,7 +1648,7 @@ Hỏi thẻ (卡, 银行卡, 要卡, 换卡, 卡号, ka): gửi "1", nhắn nhó
 /cc - Claude Code pilot (admin Telegram nhóm này — không dùng admin bot cục bộ)
 /wf1bot|/wfbot - Đặt bot WF1 (admin nhóm)
 /wf1 - WF1 sửa TG không giây (admin nhóm)
-/wf1 + list Cộng/Trừ + /bdsd (có SĐT) - sửa theo list (logic pha B; không bị WF2/WF4 hearing)
+/wf1 + list Cộng/Trừ + /bdsd (có SĐT) - pha B WF4 (logic WF1+/bdsd; không bị WF2/WF4 hearing)
 /wf3bot - Đặt bot WF3 (admin nhóm)
 /wf3 - WF3 giữ giây (admin nhóm)
 /wf2bot - Đặt bot /bdsd WF2 (admin nhóm)
