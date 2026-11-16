@@ -47,7 +47,7 @@ class Wf4Runner extends WfRunner {
   constructor(bot) {
     super(bot, { id: 'wf4', label: 'WF4', keepSeconds: false });
     this.replyWaitMs = 45000;
-    this.gapMs = 1500;
+    this.gapMs = 600;
   }
 
   getBotA() {
@@ -1117,7 +1117,7 @@ class Wf4Runner extends WfRunner {
         const newer = msgs.filter((m) => m && m.id > afterId && !m.out);
         if (newer.length) return newer.reduce((a, b) => (a.id > b.id ? a : b));
       }
-      await sleep(1200);
+      await sleep(450);
     }
     return null;
   }
@@ -1240,7 +1240,7 @@ class Wf4Runner extends WfRunner {
     }
     Utils.log(`${this.label} màn xác nhận Trừ → Quay lại: ${backBtn.text}`);
     msg = await this.clickButton(msg, backBtn.text, peer);
-    await sleep(1200);
+    await sleep(500);
 
     // Về màn chi tiết Sửa Giao Dịch (đã là Trừ) có nút Sửa Thời Gian
     for (let i = 0; i < 6; i++) {

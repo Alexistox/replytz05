@@ -585,7 +585,7 @@ class WfRunner {
           if (m && m.id > afterId) return m;
         }
       }
-      await sleep(700);
+      await sleep(350);
     }
     // Không trả lastCand nếu vẫn đúng fingerprint cũ (tránh bấm nhầm nút 2 trên màn 1)
     if (lastCand && notFingerprint != null) {
@@ -613,7 +613,7 @@ class WfRunner {
         afterId,
       });
       if (!msg || (afterId && msg.id <= afterId)) {
-        await sleep(400);
+        await sleep(250);
         continue;
       }
       const flat = await this.getButtons(msg);
@@ -629,7 +629,7 @@ class WfRunner {
       }
       prevFp = fp;
       stableMsg = msg;
-      await sleep(600);
+      await sleep(350);
     }
     if (stableMsg && afterId && stableMsg.id <= afterId) return null;
     return stableMsg;
@@ -690,7 +690,7 @@ class WfRunner {
             msg = cand;
             break;
           }
-          await sleep(500);
+          await sleep(250);
         }
       }
     }
@@ -720,13 +720,13 @@ class WfRunner {
     const beforeFp = this.buttonFingerprint(await this.getButtons(msg));
     await msg.click({ i: row, j: col });
     if (!peer) {
-      await sleep(400);
+      await sleep(250);
       return null;
     }
 
     // Nhập Thời gian: bot hỏi text, không có nút — đừng poll keyboard
     if (expectPrompt) {
-      await sleep(500);
+      await sleep(300);
       const msgs = await this.bot.client.getMessages(peer, { limit: 6 });
       for (const m of msgs || []) {
         if (m && m.id > beforeId) return m;
@@ -734,9 +734,9 @@ class WfRunner {
       return (await this.getLatestMessage(peer)) || msg;
     }
 
-    await sleep(400);
+    await sleep(250);
     const Utils = require('./utils');
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
       const msgs = await this.bot.client.getMessages(peer, { limit: 10 });
       for (const m of msgs || []) {
@@ -764,7 +764,7 @@ class WfRunner {
           }
         }
       }
-      await sleep(300);
+      await sleep(200);
     }
     return (await this.getLatestMessage(peer)) || msg;
   }
@@ -788,20 +788,20 @@ class WfRunner {
 
     await this.bot.client.sendMessage(peer, { message: '/start' });
     Utils.log(`${this.label} /start gửi (ignore KB id≤${beforeStartId})`);
-    await sleep(1500);
+    await sleep(700);
 
     let msg = await this.waitForStableKeyboard(peer, {
       minButtons: 1,
-      timeoutMs: 20000,
+      timeoutMs: 15000,
       afterId: beforeStartId,
     });
     if (!msg || !(await this.getButtons(msg)).length || msg.id <= beforeStartId) {
       beforeStartId = (await this.getLatestMessage(peer))?.id || beforeStartId;
       await this.bot.client.sendMessage(peer, { message: '/start' });
-      await sleep(1800);
+      await sleep(900);
       msg = await this.waitForStableKeyboard(peer, {
         minButtons: 1,
-        timeoutMs: 18000,
+        timeoutMs: 12000,
         afterId: beforeStartId,
       });
     }
@@ -851,7 +851,7 @@ class WfRunner {
       );
       const beforeClickId = msg.id;
       msg = await this.clickAt(msg, first.row, first.col, peer);
-      await sleep(800);
+      await sleep(350);
 
       // Chỉ chấp nhận màn/KB khác fp0
       let flatNow = await this.getButtons(msg);
@@ -862,7 +862,7 @@ class WfRunner {
       }
       const after = await this.waitForMessageWithButtons(peer, {
         minButtons: 1,
-        timeoutMs: 12000,
+        timeoutMs: 8000,
         afterId: beforeClickId,
         notFingerprint: fp0,
       });
@@ -892,11 +892,11 @@ class WfRunner {
     }
 
     let flat2 = await this.getButtons(msg);
-    // Ổn định màn 2 trước khi bấm
+    // Ổn định màn 2 trước khi bấm (nhanh hơn — đã có fp khác màn 1)
     msg =
       (await this.waitForStableKeyboard(peer, {
         minButtons: 1,
-        timeoutMs: 8000,
+        timeoutMs: 5000,
         afterId: startMsgId,
       })) || msg;
     flat2 = await this.getButtons(msg);
@@ -1410,7 +1410,7 @@ class WfRunner {
         if (back) {
           Utils.log(`${this.label} ensureTxList: còn chi tiết → Quay lại`);
           msg = await this.clickButton(msg, back.text, peer);
-          await sleep(1000);
+          await sleep(500);
           continue;
         }
       }
@@ -1418,18 +1418,18 @@ class WfRunner {
       if (findButton(flat, BTN.editTxMenu)) {
         Utils.log(`${this.label} ensureTxList: vào Chỉnh sửa giao dịch`);
         msg = await this.clickButton(msg, BTN.editTxMenu, peer);
-        await sleep(1000);
+        await sleep(500);
         flat = await this.getButtons(msg);
       }
       if (findButton(flat, BTN.editTx)) {
         Utils.log(`${this.label} ensureTxList: vào Chỉnh Giao Dịch`);
         msg = await this.clickButton(msg, BTN.editTx, peer);
-        await sleep(1200);
+        await sleep(600);
         continue;
       }
       const found = await this.findTxListMessage(peer);
       if (found) return found;
-      await sleep(800);
+      await sleep(400);
     }
     return (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer)) || msg;
   }
@@ -1907,7 +1907,7 @@ class WfRunner {
           return m;
         }
       }
-      await sleep(350);
+      await sleep(250);
     }
     return lastSeen;
   }
@@ -1952,11 +1952,11 @@ class WfRunner {
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(400);
+    await sleep(250);
 
     // Thông báo sau nhập giờ → Quay lại tin mới nhất để commit
     let newestWithBack = null;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 6; i++) {
       const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
@@ -1967,7 +1967,7 @@ class WfRunner {
         break;
       }
       if (newestWithBack) break;
-      await sleep(300);
+      await sleep(200);
     }
 
     if (newestWithBack) {
@@ -1977,7 +1977,7 @@ class WfRunner {
         `${this.label} sau nhập giờ → Quay lại tin mới #${newestWithBack.id}: ${backBtn.text}`
       );
       await this.clickAt(newestWithBack, backBtn.row, backBtn.col, peer);
-      await sleep(500);
+      await sleep(300);
     }
 
     const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
@@ -1986,7 +1986,7 @@ class WfRunner {
     });
     if (updated) return updated;
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 3; i++) {
       const latest = await this.getLatestMessage(peer);
       const body = String(latest?.message || latest?.text || '');
       const flatLatest = await this.getButtons(latest);
@@ -1996,7 +1996,7 @@ class WfRunner {
         if (fieldMatchesTarget(raw, field, newTime, this.keepSeconds)) return latest;
         if (field && oldTime && field !== oldTime) return latest;
       }
-      await sleep(400);
+      await sleep(250);
     }
     return (await this.findMessageWithBack(peer)) || (await this.getLatestMessage(peer));
   }
@@ -2131,7 +2131,7 @@ class WfRunner {
     const Utils = require('./utils');
     Utils.log(`${this.label} click Trừ tiền: ${truBtn.text}`);
     msg = await this.clickButton(msg, truBtn.text, peer);
-    await sleep(1000);
+    await sleep(500);
     for (let i = 0; i < 8; i++) {
       const confirm =
         (await this.findFlipConfirmMessage(peer)) ||
@@ -2139,7 +2139,7 @@ class WfRunner {
           ? await this.getLatestMessage(peer)
           : null);
       if (confirm) return confirm;
-      await sleep(600);
+      await sleep(350);
     }
     return (await this.getLatestMessage(peer)) || msg;
   }
@@ -2163,7 +2163,7 @@ class WfRunner {
     const Utils = require('./utils');
     Utils.log(`${this.label} màn xác nhận Trừ → Quay lại: ${backBtn.text}`);
     msg = await this.clickButton(msg, backBtn.text, peer);
-    await sleep(1200);
+    await sleep(500);
 
     for (let i = 0; i < 6; i++) {
       let detail = await this.findDetailMessage(peer);
@@ -2180,7 +2180,7 @@ class WfRunner {
           return { detail, body, page };
         }
       }
-      await sleep(700);
+      await sleep(350);
     }
 
     msg = await this.ensureTxList(msg, peer);
@@ -2204,7 +2204,7 @@ class WfRunner {
       const prev = this.findPagerPrevSafe(flat);
       if (!prev) break;
       msg = await this.clickButton(msg, prev.text, peer);
-      await sleep(600);
+      await sleep(350);
       msg =
         (await this.findTxListMessage(peer)) ||
         (await this.getLatestMessage(peer)) ||
@@ -2227,7 +2227,7 @@ class WfRunner {
         const next = this.findPagerNextSafe(flat);
         if (!next) return { msg, page: cur, total };
         msg = await this.clickButton(msg, next.text, peer);
-        await sleep(700);
+        await sleep(400);
         msg =
           (await this.findTxListMessage(peer)) ||
           (await this.getLatestMessage(peer)) ||
@@ -2237,7 +2237,7 @@ class WfRunner {
       const prev = this.findPagerPrevSafe(flat);
       if (!prev) return { msg, page: cur, total };
       msg = await this.clickButton(msg, prev.text, peer);
-      await sleep(700);
+      await sleep(400);
       msg =
         (await this.findTxListMessage(peer)) ||
         (await this.getLatestMessage(peer)) ||
@@ -2580,7 +2580,7 @@ class WfRunner {
     const session = await this.autoPickAccountByPhone(controlChatId, items, replyTo);
     const { peer } = session;
     const total = items.length;
-    const gapMs = 1500;
+    const gapMs = 600;
     if (sentA) session.stats.sentA = sentA;
 
     for (let i = 0; i < items.length; i++) {
