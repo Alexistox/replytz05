@@ -60,7 +60,11 @@ Bot tạo GD qua `/bdsd` luôn ra **Cộng**. WF4: gửi từng lệnh lên **A*
 /wf4 on
 ```
 
-Chọn còn hạn/hết hạn + tài khoản trên bot B, rồi dán:
+**Thứ tự:**
+1. `/wf4 on` → **dán list** (chưa đụng Bot B)
+2. Bot gửi hết `/bdsd` lên **A** (chờ từng reply)
+3. A xong → chọn còn/hết hạn + TK trên **B**
+4. Trên B: dòng **Trừ** đổi loại; mọi dòng sửa giờ
 
 ```text
 1. Cộng
@@ -69,9 +73,6 @@ Chọn còn hạn/hết hạn + tài khoản trên bot B, rồi dán:
 /bdsd 0363392845 Abc112112@ DO DUY NHUAN 26754321 1500000 GD: IB VU VAN LONG CHUYEN KHOAN GD 6319H5PZ9WL4T8RC 141126-10:45:18
 ```
 
-- Dòng **Cộng**: gửi A + sửa giờ trên B (không đổi loại).
-- Dòng **Trừ**: gửi A + đổi Trừ trên B + sửa giờ.
-
-**Không** chạy WF2 và WF4 cùng một chat — `/wf2 off` trước khi `/wf4 on` (và ngược lại).
+**Không** chạy WF2 và WF4 cùng một chat — `/wf2 off` trước khi `/wf4 on`.
 
 Hủy: `/wf4 off`
