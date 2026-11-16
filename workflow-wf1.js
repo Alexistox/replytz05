@@ -657,9 +657,14 @@ class WfRunner {
     return this.clickAt(msg, btn.row, btn.col, peer);
   }
 
-  /** Bấm đúng ô (row/col) — dùng khi nhiều GD trùng tên trên list. */
-  async clickAt(msg, row, col, peer) {
-    if (peer) {
+  /**
+   * Bấm đúng ô (row/col).
+   * @param {{ expectPrompt?: boolean }} [opts]
+   *   expectPrompt=true (sau «Thời gian»): KHÔNG chờ keyboard — chỉ nghỉ ngắn rồi lấy tin mới.
+   */
+  async clickAt(msg, row, col, peer, opts = {}) {
+    const expectPrompt = opts.expectPrompt === true;
+    if (peer && !expectPrompt) {
       const flat = await this.getButtons(msg);
       if (!flat.length) {
         msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
@@ -668,26 +673,54 @@ class WfRunner {
     const beforeId = msg?.id || 0;
     const beforeFp = this.buttonFingerprint(await this.getButtons(msg));
     await msg.click({ i: row, j: col });
-    await sleep(900);
-    if (!peer) return null;
-    // Bắt buộc chờ màn/keyboard MỚI (id mới hoặc nút đổi) — tránh bấm nút 2 trên màn 1
-    const next = await this.waitForMessageWithButtons(peer, {
-      minButtons: 1,
-      timeoutMs: 15000,
-      afterId: beforeId,
-      notFingerprint: beforeFp,
-      allowSameIdChanged: true,
-    });
-    if (next) return next;
-    // Prompt nhập text không có nút
-    return (
-      (await this.waitForMessageWithButtons(peer, {
-        minButtons: 0,
-        timeoutMs: 4000,
-        afterId: beforeId,
-        requireButtons: false,
-      })) || (await this.getLatestMessage(peer))
-    );
+    if (!peer) {
+      await sleep(400);
+      return null;
+    }
+
+    // Nhập Thời gian: bot hỏi text, không có nút — đừng poll keyboard
+    if (expectPrompt) {
+      await sleep(500);
+      const msgs = await this.bot.client.getMessages(peer, { limit: 6 });
+      for (const m of msgs || []) {
+        if (m && m.id > beforeId) return m;
+      }
+      return (await this.getLatestMessage(peer)) || msg;
+    }
+
+    await sleep(400);
+    const Utils = require('./utils');
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const msgs = await this.bot.client.getMessages(peer, { limit: 10 });
+      for (const m of msgs || []) {
+        if (!m) continue;
+        const flat = await this.getButtons(m);
+        const fp = this.buttonFingerprint(flat);
+        const newer = m.id > beforeId;
+        const sameIdNewKeys =
+          m.id === beforeId && flat.length && fp && fp !== beforeFp;
+
+        if ((newer || sameIdNewKeys) && flat.length) {
+          if (fp === beforeFp && !newer) continue;
+          Utils.log(
+            `${this.label} sau click → KB #${m.id} (${flat.length} nút)`
+          );
+          return m;
+        }
+        if (newer && !flat.length) {
+          const body = String(m.message || m.text || '');
+          if (body.length) {
+            Utils.log(
+              `${this.label} sau click → prompt #${m.id}: ${body.slice(0, 60)}`
+            );
+            return m;
+          }
+        }
+      }
+      await sleep(300);
+    }
+    return (await this.getLatestMessage(peer)) || msg;
   }
 
   async clickIndex(msg, index, peer) {
@@ -1703,7 +1736,7 @@ class WfRunner {
   async waitForUpdatedDetailTime(peer, targetTime, { beforeId = 0, oldTime = null } = {}) {
     const Utils = require('./utils');
     let lastSeen = null;
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 8; i++) {
       const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
@@ -1731,7 +1764,7 @@ class WfRunner {
           return m;
         }
       }
-      await sleep(700);
+      await sleep(350);
     }
     return lastSeen;
   }
@@ -1763,7 +1796,10 @@ class WfRunner {
       );
     }
     Utils.log(`${this.label} click Thời gian: ${timeBtn.text}`);
-    msg = await this.clickButton(msg, timeBtn.text, peer);
+    // Sau Thời gian bot hỏi nhập text — không chờ keyboard
+    msg = await this.clickAt(msg, timeBtn.row, timeBtn.col, peer, {
+      expectPrompt: true,
+    });
 
     const prompt = String(msg?.message || msg?.text || '');
     if (/t[eê]n\s*ng[uư][oờ]i|ng[uư][oờ]i\s*chuy[eể]n|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(prompt) && !/th[oờ]i\s*gian/i.test(prompt)) {
@@ -1773,11 +1809,11 @@ class WfRunner {
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(1000);
+    await sleep(400);
 
-    // Thông báo sau nhập giờ → Quay lại tin mới nhất để commit (giống WF4)
+    // Thông báo sau nhập giờ → Quay lại tin mới nhất để commit
     let newestWithBack = null;
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 8; i++) {
       const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
@@ -1788,7 +1824,7 @@ class WfRunner {
         break;
       }
       if (newestWithBack) break;
-      await sleep(600);
+      await sleep(300);
     }
 
     if (newestWithBack) {
@@ -1797,8 +1833,8 @@ class WfRunner {
       Utils.log(
         `${this.label} sau nhập giờ → Quay lại tin mới #${newestWithBack.id}: ${backBtn.text}`
       );
-      await this.clickButton(newestWithBack, backBtn.text, peer);
-      await sleep(1200);
+      await this.clickAt(newestWithBack, backBtn.row, backBtn.col, peer);
+      await sleep(500);
     }
 
     const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
@@ -1807,7 +1843,7 @@ class WfRunner {
     });
     if (updated) return updated;
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       const latest = await this.getLatestMessage(peer);
       const body = String(latest?.message || latest?.text || '');
       const flatLatest = await this.getButtons(latest);
@@ -1817,7 +1853,7 @@ class WfRunner {
         if (fieldMatchesTarget(raw, field, newTime, this.keepSeconds)) return latest;
         if (field && oldTime && field !== oldTime) return latest;
       }
-      await sleep(700);
+      await sleep(400);
     }
     return (await this.findMessageWithBack(peer)) || (await this.getLatestMessage(peer));
   }
