@@ -22,7 +22,7 @@ Ba workflow **khác nhau**, mỗi cái một bot riêng.
 
 `151126-18:34:26` → chỉnh thành `15/11/2026 18:34:26` (giữ giây).
 
-Luồng chung WF1/WF3: `/start` → button 1 → 2 → tài khoản còn hạn → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung → Quay lại → chờ bảng mới → Quay lại. Quét nhiều trang đến khi hết GD lệch.
+Luồng chung WF1/WF3: `/start` → button 1 → 2 → **user chọn còn hạn hoặc hết hạn** → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung → Quay lại → chờ bảng mới → Quay lại. Quét nhiều trang đến khi hết GD lệch.
 
 Hủy: `/wf1 off` hoặc `/wf3 off`
 

@@ -6,10 +6,11 @@
  * WF2: gửi /bdsd — xem workflow-wf2.js
  *
  * Luồng:
- * 1) /start → bấm button đầu → button thứ 2 → "tài khoản còn hạn"
- * 2) Liệt kê button tài khoản → user chọn
- * 3) "chỉnh sửa giao dịch" → "chỉnh giao dịch"
- * 4) Lặp từng giao dịch: so sánh thời gian trong Nội dung vs mục thời gian;
+ * 1) /start → bấm button đầu → button thứ 2
+ * 2) User chọn filter: "tài khoản còn hạn" hoặc "tài khoản hết hạn"
+ * 3) Liệt kê button tài khoản → user chọn
+ * 4) "chỉnh sửa giao dịch" → "chỉnh giao dịch"
+ * 5) Lặp từng giao dịch: so sánh thời gian trong Nội dung vs mục thời gian;
  *    trùng → bỏ qua; khác → chỉnh thời gian theo Nội dung; báo cáo về chat.
  */
 
@@ -19,6 +20,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const BTN = {
   accountValid: /t[aà]i\s*kho[aả]n\s*c[oò]n\s*h[aạ]n/i,
+  accountExpired: /t[aà]i\s*kho[aả]n\s*h[eế]t\s*h[aạ]n/i,
+  /** Còn hạn hoặc hết hạn — bước filter trước khi liệt kê TK */
+  accountFilter:
+    /t[aà]i\s*kho[aả]n\s*(c[oò]n\s*h[aạ]n|h[eế]t\s*h[aạ]n)/i,
   // Một số bot: "Chỉnh sửa giao dịch"; bot này: "✏️ Chỉnh Giao Dịch"
   editTxMenu: /ch[iỉ]nh\s*s[uử]a\s*giao\s*d[iị]ch/i,
   editTx: /ch[iỉ]nh\s*giao\s*d[iị]ch/i,
@@ -274,7 +279,10 @@ class WfRunner {
 
   isAwaitingUserInput(controlChatId) {
     const s = this.getSession(controlChatId);
-    return s && s.phase === 'await_account';
+    return (
+      s &&
+      (s.phase === 'await_account_filter' || s.phase === 'await_account')
+    );
   }
 
   async resolvePeer(peerStr) {
@@ -454,6 +462,7 @@ class WfRunner {
       controlChatId: String(controlChatId),
       replyTo,
       stats: { fixed: 0, skipped: 0, errors: 0 },
+      accountFilterButtons: [],
       accountButtons: [],
     });
 
@@ -469,60 +478,145 @@ class WfRunner {
     await this.notify(controlChatId, '👆 Bấm button thứ 2…', replyTo);
     msg = await this.clickIndex(msg, 1, peer);
 
-    await this.notify(controlChatId, '👆 Chọn “tài khoản còn hạn”…', replyTo);
-    msg = await this.clickButton(msg, BTN.accountValid, peer);
-
-    const flat = await this.getButtons(msg);
-    if (!flat.length) throw new Error('Không thấy danh sách button tài khoản');
+    const flatFilters = await this.getButtons(msg);
+    const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
+    if (!filterBtns.length) {
+      const labels = flatFilters.map((b) => b.text).join(' | ') || '(không có)';
+      throw new Error(
+        `Không thấy button “tài khoản còn hạn / hết hạn”.\nHiện có: ${labels}`
+      );
+    }
 
     const session = this.getSession(controlChatId);
-    session.phase = 'await_account';
+    session.phase = 'await_account_filter';
     session.botMsgId = msg.id;
-    session.accountButtons = flat.map((b, i) => ({
+    session.lastMsg = msg;
+    session.accountFilterButtons = filterBtns.map((b, i) => ({
       index: i,
       text: b.text,
       row: b.row,
       col: b.col,
     }));
-    session.lastMsg = msg;
 
-    const list = session.accountButtons
+    const list = session.accountFilterButtons
       .map((b) => `${b.index + 1}. ${b.text}`)
       .join('\n');
     await this.notify(
       controlChatId,
       [
-        '📋 Chọn tài khoản (reply số hoặc tên button):',
+        '📋 Chọn loại tài khoản (còn hạn / hết hạn):',
         list,
         '',
-        'Ví dụ: `1` hoặc dán đúng tên button.',
+        'Reply số hoặc tên button. Ví dụ: `1` hoặc `còn hạn`.',
         `Hủy: ${this.cmd} off`,
       ].join('\n'),
       replyTo
     );
   }
 
+  pickFromButtonList(buttons, messageText) {
+    const text = String(messageText || '').trim();
+    if (!text) return null;
+    if (/^\d+$/.test(text)) {
+      return buttons[parseInt(text, 10) - 1] || null;
+    }
+    const q = text.toLowerCase();
+    return (
+      buttons.find((b) => b.text.toLowerCase() === q) ||
+      buttons.find((b) => b.text.toLowerCase().includes(q)) ||
+      null
+    );
+  }
+
   /**
-   * User chọn account trong chat điều khiển.
+   * User chọn filter (còn/hết hạn) hoặc account trong chat điều khiển.
    * @returns {boolean} true nếu đã xử lý
    */
   async handleUserAccountPick(controlChatId, messageText, messageId) {
     const session = this.getSession(controlChatId);
-    if (!session || session.phase !== 'await_account') return false;
+    if (!session) return false;
+    if (
+      session.phase !== 'await_account_filter' &&
+      session.phase !== 'await_account'
+    ) {
+      return false;
+    }
 
     const text = String(messageText || '').trim();
     if (!text || text.startsWith('/')) return false;
 
-    let pick = null;
-    if (/^\d+$/.test(text)) {
-      const n = parseInt(text, 10) - 1;
-      pick = session.accountButtons[n];
-    } else {
-      const q = text.toLowerCase();
-      pick =
-        session.accountButtons.find((b) => b.text.toLowerCase() === q) ||
-        session.accountButtons.find((b) => b.text.toLowerCase().includes(q));
+    if (session.phase === 'await_account_filter') {
+      return this.handleAccountFilterPick(controlChatId, text, messageId);
     }
+    return this.handleAccountButtonPick(controlChatId, text, messageId);
+  }
+
+  async handleAccountFilterPick(controlChatId, text, messageId) {
+    const session = this.getSession(controlChatId);
+    const pick = this.pickFromButtonList(session.accountFilterButtons || [], text);
+    if (!pick) {
+      await this.notify(
+        controlChatId,
+        '❗ Không khớp. Gửi số hoặc tên: còn hạn / hết hạn.',
+        messageId
+      );
+      return true;
+    }
+
+    session.phase = 'processing';
+    session.chosenAccountFilter = pick.text;
+    await this.notify(
+      controlChatId,
+      `✅ Đã chọn loại: ${pick.text}\nĐang lấy danh sách tài khoản…`,
+      messageId
+    );
+
+    try {
+      const { peer, replyTo } = session;
+      let msg = session.lastMsg || (await this.getLatestMessage(peer));
+      msg = await this.clickButton(msg, pick.text, peer);
+
+      const flat = await this.getButtons(msg);
+      if (!flat.length) throw new Error('Không thấy danh sách button tài khoản');
+
+      session.phase = 'await_account';
+      session.botMsgId = msg.id;
+      session.lastMsg = msg;
+      session.accountButtons = flat.map((b, i) => ({
+        index: i,
+        text: b.text,
+        row: b.row,
+        col: b.col,
+      }));
+
+      const list = session.accountButtons
+        .map((b) => `${b.index + 1}. ${b.text}`)
+        .join('\n');
+      await this.notify(
+        controlChatId,
+        [
+          `📋 Chọn tài khoản (${pick.text}) — reply số hoặc tên button:`,
+          list,
+          '',
+          'Ví dụ: `1` hoặc dán đúng tên button.',
+          `Hủy: ${this.cmd} off`,
+        ].join('\n'),
+        replyTo || messageId
+      );
+    } catch (err) {
+      this.clearSession(controlChatId);
+      await this.notify(
+        controlChatId,
+        `❌ ${this.label} lỗi: ${err.message}`,
+        messageId
+      );
+    }
+    return true;
+  }
+
+  async handleAccountButtonPick(controlChatId, text, messageId) {
+    const session = this.getSession(controlChatId);
+    const pick = this.pickFromButtonList(session.accountButtons || [], text);
     if (!pick) {
       await this.notify(
         controlChatId,
@@ -578,7 +672,8 @@ class WfRunner {
     if (BTN.back.test(t) || BTN.nextPage.test(t) || BTN.prevPage.test(t)) return false;
     if (BTN.editTxMenu.test(t) || BTN.editTx.test(t)) return false;
     if (BTN.editTime.test(t)) return false;
-    if (BTN.accountValid.test(t)) return false;
+    if (BTN.accountValid.test(t) || BTN.accountExpired.test(t)) return false;
+    if (BTN.accountFilter.test(t)) return false;
     // Field / menu trên màn chi tiết — KHÔNG phải dòng GD trong list
     // (trước đây nhầm mở "Sửa Số Tiền", "Tên Người Chuyển"…)
     if (/t[aạ]o\s*giao\s*d[iị]ch/i.test(t)) return false;
