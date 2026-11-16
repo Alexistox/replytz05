@@ -213,11 +213,16 @@ function extractTxKey(body, keepSeconds = false) {
 
 /** +/- và số từ label nút list, vd "+13,000,000đ | NAME" */
 function labelAmountInfo(label) {
-  const m = String(label || '').match(/([+-]?)(\d[\d.,]*)\s*đ/i);
+  const t = String(label || '');
+  const m =
+    t.match(/([+-]?)(\d[\d.,\s]*)\s*[đ₫]/i) ||
+    t.match(/([+-])(\d[\d.,\s]*)(?=\s*\||\s*$)/);
   if (!m) return null;
+  const digits = m[2].replace(/[^\d]/g, '');
+  if (!digits) return null;
   return {
     sign: m[1] === '-' ? '-' : '+',
-    digits: m[2].replace(/[.,\s]/g, ''),
+    digits,
   };
 }
 

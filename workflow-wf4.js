@@ -21,6 +21,7 @@ const {
   shouldSkipTimeEdit,
   fieldMatchesTarget,
   bodyAmountInfo,
+  labelAmountInfo,
   findButton,
 } = require('./workflow-wf1');
 const { BDSD_LINE } = require('./workflow-wf2');
@@ -1347,13 +1348,144 @@ class Wf4Runner extends WfRunner {
     );
   }
 
+  /** Số tiền trên label nút list: +10,000,000đ | … / 10.000.000đ / 10000000 */
+  labelAmountDigits(text) {
+    const t = String(text || '');
+    const info = labelAmountInfo(t);
+    if (info?.digits) return info.digits;
+    const m =
+      t.match(/([+-]?)(\d[\d.,]*)\s*[đ₫d]\b/i) ||
+      t.match(/([+-])(\d[\d.,]*)/) ||
+      t.match(/(\d{4,}(?:[.,]\d{3})+)/);
+    if (!m) return '';
+    return String(m[2] || m[1] || '').replace(/\D/g, '');
+  }
+
+  /** Đảm bảo đang ở list Edit LSGD (có Trang x/y hoặc nút tiền). */
+  async ensureRealTxList(msg, peer) {
+    msg = await this.ensureTxList(msg, peer);
+    for (let i = 0; i < 4; i++) {
+      const flat = await this.getButtons(msg);
+      const pageInfo = this.parseLsgdPage(msg);
+      const txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
+      const withAmt = txButtons.filter((b) => !!this.labelAmountDigits(b.text));
+      if (pageInfo || withAmt.length > 0) {
+        if (!pageInfo) {
+          Utils.log(
+            `${this.label} list không có 'Trang x/y' nhưng có ${withAmt.length} nút tiền`
+          );
+        }
+        return msg;
+      }
+      Utils.log(
+        `${this.label} chưa ra list GD (buttons: ${flat.map((b) => b.text).slice(0, 8).join(' | ') || '(không)'}) — thử lại Chỉnh Giao Dịch`
+      );
+      if (findButton(flat, BTN.editTxMenu)) {
+        msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+        await sleep(800);
+      }
+      if (findButton(await this.getButtons(msg), BTN.editTx)) {
+        msg = await this.clickButton(msg, BTN.editTx, peer);
+        await sleep(1200);
+      } else {
+        const back = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+        if (back) {
+          msg = await this.clickButton(msg, back.text, peer);
+          await sleep(800);
+        }
+      }
+      msg =
+        (await this.findTxListMessage(peer)) ||
+        (await this.ensureTxList(msg, peer)) ||
+        (await this.getLatestMessage(peer)) ||
+        msg;
+    }
+    return msg;
+  }
+
+  /** Sau bấm dòng GD: chờ tin Sửa Giao Dịch thật (không tin getLatestMessage stale). */
+  async waitForOpenedDetail(peer, { beforeId = 0, amountDigits = '' } = {}) {
+    let last = null;
+    for (let i = 0; i < 8; i++) {
+      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+      for (const m of msgs || []) {
+        if (!m || (beforeId && m.id < beforeId)) continue;
+        const body = String(m.message || m.text || '');
+        if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
+        if (this.isFlipConfirmScreen(m)) continue;
+        const flat = await this.getButtons(m);
+        if (!findButton(flat, BTN.back)) continue;
+        last = m;
+        const info = bodyAmountInfo(body);
+        if (amountDigits && info && info.digits === amountDigits) return m;
+        if (!amountDigits) return m;
+      }
+      // Prefer dedicated finder
+      const d = await this.findDetailMessage(peer);
+      if (d) {
+        last = d;
+        const info = bodyAmountInfo(String(d.message || d.text || ''));
+        if (!amountDigits || (info && info.digits === amountDigits)) return d;
+      }
+      await sleep(600);
+    }
+    return last;
+  }
+
+  amountSoftMatch(body, fields, page) {
+    const info = bodyAmountInfo(body);
+    if (!info || !fields.amountDigits || info.digits !== fields.amountDigits) {
+      return false;
+    }
+    const wantT = this.resolveContentTime('', fields);
+    const gotT = extractContentTime(body, false);
+    if (wantT && gotT && wantT === gotT) return true;
+    // GD mới: trang 1 hoặc chưa parse được trang — chấp nhận khớp tiền
+    if (!page || page === 1) return true;
+    return false;
+  }
+
+  /** Thoát list rồi vào lại Chỉnh Giao Dịch để LSGD hiện GD mới từ A. */
+  async refreshTxList(msg, peer) {
+    msg = msg || (await this.getLatestMessage(peer));
+    let flat = await this.getButtons(msg);
+    // Về menu TK / menu cha nếu đang ở list hoặc chi tiết
+    for (let i = 0; i < 3; i++) {
+      flat = await this.getButtons(msg);
+      if (findButton(flat, BTN.editTx) || findButton(flat, BTN.editTxMenu)) break;
+      const back = findButton(flat, BTN.back) || findButton(flat, BTN.backLoose);
+      if (!back) break;
+      Utils.log(`${this.label} refreshTxList Quay lại: ${back.text}`);
+      msg = await this.clickButton(msg, back.text, peer);
+      await sleep(800);
+    }
+    flat = await this.getButtons(msg);
+    if (findButton(flat, BTN.editTxMenu)) {
+      msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+      await sleep(800);
+      flat = await this.getButtons(msg);
+    }
+    if (findButton(flat, BTN.editTx) || findButton(await this.getButtons(msg), BTN.editTx)) {
+      msg = await this.clickButton(msg, BTN.editTx, peer);
+      await sleep(1200);
+    }
+    return (
+      (await this.findTxListMessage(peer)) ||
+      (await this.ensureRealTxList(msg, peer)) ||
+      (await this.getLatestMessage(peer)) ||
+      msg
+    );
+  }
+
   async findAndOpenItemOnB(session, fields, controlChatId) {
     const { peer, replyTo } = session;
     let msg = session.listMsg || session.lastMsg || (await this.getLatestMessage(peer));
-    msg = await this.ensureTxList(msg, peer);
+    // GD vừa gửi A thường chưa có trên list đang mở — refresh menu
+    msg = await this.refreshTxList(msg, peer);
+    msg = await this.ensureRealTxList(msg, peer);
     // GD mới thường ở trang 1 — bấm Trước đến 1/N trước khi quét
     msg = await this.goToFirstTxPage(msg, peer);
-    msg = await this.ensureTxList(msg, peer);
+    msg = await this.ensureRealTxList(msg, peer);
     const startInfo = this.parseLsgdPage(msg);
     Utils.log(
       `${this.label} tìm GD ${fields.amountDigits || '?'} từ trang ${startInfo?.page || '?'}/${startInfo?.total || '?'}`
@@ -1367,24 +1499,49 @@ class Wf4Runner extends WfRunner {
       msg = await this.goToFirstTxPage(msg, peer);
     }
 
-    let page = 1;
+    let page = startInfo?.page || 1;
     let knownTotal = this.parseLsgdPage(msg)?.total || null;
     const maxPages = knownTotal || 20;
+    let scannedLabels = [];
 
     for (let p = 0; p < maxPages; p++) {
       const nav = await this.goToTxPage(msg, peer, page);
       msg = nav.msg;
       page = nav.page || page;
       if (nav.total) knownTotal = nav.total;
-      Utils.log(`${this.label} quét LSGD trang ${page}/${knownTotal || '?'}`);
 
       let flat = await this.getButtons(msg);
+      // List hay bị stale sau Quay lại — lấy lại tin list gần nhất
+      if (!flat.length || !flat.some((b) => this.isLikelyTransactionButton(b.text))) {
+        msg =
+          (await this.findTxListMessage(peer)) ||
+          (await this.ensureRealTxList(msg, peer)) ||
+          msg;
+        flat = await this.getButtons(msg);
+      }
+
       const txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
-      for (const btn of txButtons) {
-        const labelDigits = ((btn.text.match(/(\d[\d.,]*)\s*đ/i) || [])[1] || '').replace(
-          /\D/g,
-          ''
-        );
+      const labels = txButtons.map((b) => b.text);
+      scannedLabels.push(`p${page}:${labels.slice(0, 6).join(' ; ') || '(không GD)'}`);
+      Utils.log(
+        `${this.label} quét LSGD trang ${page}/${knownTotal || '?'} — ${txButtons.length} GD: ${labels.slice(0, 5).join(' || ') || '(không)'}`
+      );
+
+      // Ưu tiên nút đúng số tiền trước
+      const ordered = [...txButtons].sort((a, b) => {
+        const da = this.labelAmountDigits(a.text);
+        const db = this.labelAmountDigits(b.text);
+        const score = (d) =>
+          fields.amountDigits && d === fields.amountDigits
+            ? 0
+            : d
+              ? 1
+              : 2;
+        return score(da) - score(db);
+      });
+
+      for (const btn of ordered) {
+        const labelDigits = this.labelAmountDigits(btn.text);
         if (
           fields.amountDigits &&
           labelDigits &&
@@ -1393,24 +1550,44 @@ class Wf4Runner extends WfRunner {
           continue;
         }
 
-        let detail = await this.clickAt(msg, btn.row, btn.col, peer);
+        const beforeId = msg?.id || 0;
+        Utils.log(
+          `${this.label} mở GD «${btn.text}» (tiền label=${labelDigits || '?'})`
+        );
+        await this.clickAt(msg, btn.row, btn.col, peer);
+        let detail = await this.waitForOpenedDetail(peer, {
+          beforeId,
+          amountDigits: fields.amountDigits,
+        });
+        if (!detail) {
+          detail = await this.findDetailMessage(peer);
+        }
         let body = String(detail?.message || detail?.text || '');
-        if (this.detailMatchesItem(body, fields)) {
+        if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) {
+          Utils.log(
+            `${this.label} sau click chưa ra chi tiết — body: ${body.slice(0, 80)}`
+          );
+          msg = await this.ensureRealTxList(
+            (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer)),
+            peer
+          );
+          const backNav = await this.goToTxPage(msg, peer, page);
+          msg = backNav.msg;
+          continue;
+        }
+
+        if (this.detailMatchesItem(body, fields) || this.amountSoftMatch(body, fields, page)) {
+          Utils.log(
+            `${this.label} khớp GD tiền ${fields.amountDigits} (trang ${page})`
+          );
           return { detail, body, page, msg };
         }
-        // Nới: cùng số tiền + giờ Nội dung khớp /bdsd, hoặc GD mới ở trang 1
-        const info = bodyAmountInfo(body);
-        if (info && fields.amountDigits && info.digits === fields.amountDigits) {
-          const wantT = this.resolveContentTime('', fields);
-          const gotT = extractContentTime(body, false);
-          if ((wantT && gotT && wantT === gotT) || page === 1) {
-            Utils.log(
-              `${this.label} nhận GD soft-match tiền ${fields.amountDigits} (trang ${page}, time ${gotT || '?'})`
-            );
-            return { detail, body, page, msg };
-          }
-        }
+
+        Utils.log(
+          `${this.label} GD mở không khớp (label ${labelDigits || '?'} / cần ${fields.amountDigits}): ${body.slice(0, 100)}`
+        );
         msg = await this.returnToTransactionList(detail, peer, { afterEdit: false });
+        msg = await this.ensureRealTxList(msg, peer);
         // Sau Quay lại bot về trang 1 — nhảy lại trang đang quét
         const backNav = await this.goToTxPage(msg, peer, page);
         msg = backNav.msg;
@@ -1418,21 +1595,33 @@ class Wf4Runner extends WfRunner {
 
       if (knownTotal != null && page >= knownTotal) break;
       flat = await this.getButtons(msg);
-      const nextBtn = this.findPagerNext(flat);
+      const nextBtn = this.findPagerNext(flat) || findButton(flat, BTN.nextPage);
       if (!nextBtn) break;
       const before = this.parseLsgdPage(msg)?.page || page;
       msg = await this.clickButton(msg, nextBtn.text, peer);
       await sleep(700);
       msg = (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer)) || msg;
       const after = this.parseLsgdPage(msg);
-      if (!after || after.page <= before) break;
-      page = after.page;
-      if (after.total) knownTotal = after.total;
+      if (after) {
+        if (after.page <= before) break;
+        page = after.page;
+        if (after.total) knownTotal = after.total;
+      } else {
+        // Không parse được trang — coi như đã sang trang kế
+        page = before + 1;
+      }
     }
 
     await this.notify(
       controlChatId,
-      `⚠️ Không thấy GD khớp tiền ${fields.amountDigits || '?'} trên bot B (đã về trang 1 rồi quét).`,
+      [
+        `⚠️ Không thấy GD khớp tiền ${fields.amountDigits || '?'} trên bot B (đã về trang 1 rồi quét).`,
+        scannedLabels.length
+          ? `Đã thấy: ${scannedLabels.slice(0, 3).join(' | ')}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
       replyTo
     );
     return null;
