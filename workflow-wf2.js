@@ -213,16 +213,17 @@ class Wf2BdsdRunner {
         );
         return;
       }
-      // Chờ tin tiếp theo chứa list
+      // Chờ tin tiếp theo chứa list — chỉ ở đúng chat này
       this.sessions.set(String(chatId), {
         phase: 'await_list',
         replyTo: messageId,
+        controlChatId: String(chatId),
       });
       await this.bot.sendReply(
         chatId,
         messageId,
         [
-          '📥 WF2 sẵn sàng — **dán list `/bdsd …` vào tin tiếp theo**.',
+          '📥 WF2 sẵn sàng — **dán list `/bdsd …` vào tin tiếp theo** (chỉ chat này).',
           `Bot: \`${this.getBotPeerConfig()}\``,
           'Hủy: `/wf2 off`',
         ].join('\n')
@@ -245,16 +246,24 @@ class Wf2BdsdRunner {
         '`/wf2bot @bot` — đặt bot nhận lệnh',
         '`/wf2` — chờ dán list',
         '`/wf2` + list `/bdsd …` trong cùng tin — chạy ngay',
-        'Hoặc dán thuần list các dòng `/bdsd …` (khi đã đặt bot)',
+        'Sau `/wf2` on: dán list **đúng chat đó** (không nhận từ nhóm khác)',
         '`/wf2 off` — hủy',
         '`/wf2 status`',
       ].join('\n')
     );
   }
 
-  /** Tin thường / tin list khi đang await_list, hoặc list thuần /bdsd */
+  /** Tin list chỉ khi chat này đã /wf2 on (không nhận từ nhóm khác). */
   async handleIncomingList(chatId, messageText, messageId) {
     if (this.bot.wf4?.isActive?.(chatId)) {
+      return false;
+    }
+    const session = this.getSession(chatId);
+    if (!session) return false;
+    if (
+      session.controlChatId &&
+      String(session.controlChatId) !== String(chatId)
+    ) {
       return false;
     }
     if (this.isBusy(chatId)) {
@@ -263,20 +272,16 @@ class Wf2BdsdRunner {
     }
 
     const awaiting = this.isAwaitingUserInput(chatId);
-    const pure = isPureBdsdList(messageText);
-    if (!awaiting && !pure) return false;
+    if (!awaiting) return false;
 
     const lines = extractBdsdLines(messageText);
     if (!lines.length) {
-      if (awaiting) {
-        await this.notify(
-          chatId,
-          '❗ Không thấy dòng `/bdsd …`. Dán lại list hoặc `/wf2 off`.',
-          messageId
-        );
-        return true;
-      }
-      return false;
+      await this.notify(
+        chatId,
+        '❗ Không thấy dòng `/bdsd …`. Dán lại list hoặc `/wf2 off`.',
+        messageId
+      );
+      return true;
     }
 
     await this.startBatch(lines, chatId, messageId);
@@ -317,13 +322,14 @@ class Wf2BdsdRunner {
       sent: 0,
       errors: 0,
       replyTo,
+      controlChatId: String(controlChatId),
       cancel: false,
     });
 
     await this.bot.sendReply(
       controlChatId,
       replyTo,
-      `🚀 WF2: sẽ gửi **${lines.length}** lệnh /bdsd → \`${this.getBotPeerConfig()}\``
+      `🚀 WF2: sẽ gửi **${lines.length}** lệnh /bdsd → \`${this.getBotPeerConfig()}\` (chỉ chat này)`
     );
 
     this.runBatch(controlChatId).catch(async (err) => {

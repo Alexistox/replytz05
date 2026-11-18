@@ -1088,7 +1088,11 @@ class WfRunner {
         );
         return;
       }
-      await this.bot.sendReply(chatId, messageId, `🚀 Bắt đầu ${this.label}…`);
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        `🚀 Bắt đầu ${this.label} ở chat \`${chatId}\` — chỉ chạy tại chat này.`
+      );
       this.runUntilAccountPick(chatId, messageId).catch(async (err) => {
         this.clearSession(chatId);
         await this.notify(chatId, `❌ ${this.label} lỗi: ${err.message}`, messageId);
@@ -1199,6 +1203,13 @@ class WfRunner {
   async handleUserAccountPick(controlChatId, messageText, messageId) {
     const session = this.getSession(controlChatId);
     if (!session) return false;
+    // Chỉ nhận chọn TK đúng chat đã bật WF
+    if (
+      session.controlChatId &&
+      String(session.controlChatId) !== String(controlChatId)
+    ) {
+      return false;
+    }
     if (
       session.phase !== 'await_account_filter' &&
       session.phase !== 'await_account'

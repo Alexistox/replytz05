@@ -345,6 +345,11 @@ class Wf4Runner extends WfRunner {
         controlChatId: String(chatId),
         stats: emptyStats(),
       });
+      await this.notify(
+        chatId,
+        `📌 WF4 gắn với chat \`${chatId}\` — list chỉ nhận ở đây.`,
+        messageId
+      );
       await this.startPhaseA(rawText, chatId, messageId);
       return;
     }
@@ -431,10 +436,10 @@ class Wf4Runner extends WfRunner {
         chatId,
         messageId,
         [
-          `📥 WF4 **ON** — dán list \`N. Cộng|Trừ\` + \`/bdsd …\``,
+          `📥 WF4 **ON** ở chat \`${chatId}\` — chỉ nhận list **tại chat này**.`,
           `A=\`${this.getBotA()}\` · B=\`${this.getBotB()}\``,
           'Mỗi lần dán: gửi A hết → chỉnh B. Xong vẫn ON, dán tiếp được.',
-          'Tắt: `/wf4 off`',
+          'Tắt: `/wf4 off` (đúng chat này)',
         ].join('\n')
       );
       return;
@@ -1000,6 +1005,13 @@ class Wf4Runner extends WfRunner {
   async handleIncomingList(chatId, messageText, messageId) {
     const session = this.getSession(chatId);
     if (!session) return false;
+    // Chỉ nhận list đúng chat đã /wf4 on — không lan sang nhóm khác
+    if (
+      session.controlChatId &&
+      String(session.controlChatId) !== String(chatId)
+    ) {
+      return false;
+    }
 
     // Không nuốt lệnh điều khiển (/wf4 off, /phab, …)
     const first = String(messageText || '').trim().split(/\s+/)[0] || '';

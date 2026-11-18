@@ -8,7 +8,7 @@ const Utils = require('./utils');
 const Ai = require('./ai');
 const ClaudeCode = require('./claude-code');
 const { WfRunner } = require('./workflow-wf1');
-const { Wf2BdsdRunner, isPureBdsdList } = require('./workflow-wf2');
+const { Wf2BdsdRunner } = require('./workflow-wf2');
 const { Wf4Runner, looksLikeWf4List } = require('./workflow-wf4');
 const { isWf1AnnotatedRepairMessage } = require('./workflow-wf1');
 const { createControlServer } = require('./control-server');
@@ -563,9 +563,10 @@ class BankTransactionUserbot {
               );
               if (handledWf4) return;
             }
+            // WF2 chỉ nghe list ở đúng chat đã /wf2 on (không nhận list thuần từ nhóm khác)
             if (
               !this.wf4.isActive(chatId) &&
-              (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText))
+              (this.wf2.isAwaitingUserInput(chatId) || this.wf2.isBusy(chatId))
             ) {
               this.processedMessages.set(messageKey, currentTime);
               const handledWf2 = await this.wf2.handleIncomingList(
