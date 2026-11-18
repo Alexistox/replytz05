@@ -24,6 +24,25 @@ Ba workflow **khác nhau**, mỗi cái một bot riêng.
 
 Luồng chung WF1/WF3: `/start` → button 1 → 2 → **user chọn còn hạn hoặc hết hạn** → chọn TK → chỉnh giao dịch → đồng bộ Thời gian theo Nội dung → Quay lại → chờ bảng mới → Quay lại. Quét nhiều trang đến khi hết GD lệch.
 
+### `/wf1` + list Cộng/Trừ → pha B WF4
+
+Khi gửi **`/wf1` kèm list** `N. Cộng|Trừ` + `/bdsd …` **có SĐT**, bot **không** chạy WF1 quét mù — vào **pha B của WF4** (logic WF1 + `/bdsd` trên bot B):
+
+1. Chọn TK theo SĐT (còn hạn → hết hạn)
+2. Tìm GD theo số tiền trong `/bdsd`
+3. Dòng **Trừ** → đổi loại + Quay lại
+4. Sửa giờ theo Nội dung
+
+Cần đã `/wf4bot @A @B`. Tin này **không** bị WF2/WF4 hearing nhận.
+
+```text
+/wf1
+1. Cộng
+/bdsd 0363… …
+2. Trừ
+/bdsd 0363… …
+```
+
 Hủy: `/wf1 off` hoặc `/wf3 off`
 
 ## WF2 — gửi lần lượt list `/bdsd` lên bot khác
@@ -63,9 +82,9 @@ Bot tạo GD qua `/bdsd` luôn ra **Cộng**. WF4: gửi từng lệnh lên **A*
 **Chế độ ON liên tục** đến `/wf4 off`:
 1. `/wf4 on` → dán list/mục (chưa đụng B)
 2. Gửi hết batch lên **A**
-3. Bot B tự chọn: **còn hạn** → tìm TK cùng SĐT `/bdsd`; không thấy → **Quay lại** → **hết hạn** → tìm tiếp
-4. Trên B: dòng **Trừ** đổi loại + Quay lại sửa giờ; mọi dòng sửa giờ
-5. Xong batch vẫn ON — dán tiếp (đang bận thì xếp hàng)
+3. **Pha B** = logic WF1 + `/bdsd` trên bot B (chọn TK theo SĐT → Trừ → sửa giờ)
+4. Xong batch vẫn ON — dán tiếp (đang bận thì xếp hàng)
+5. Lỗi pha B: `/phab` chạy lại chỉ B; hoặc `/wf1` + list (cùng path pha B)
 
 ```text
 1. Cộng
@@ -78,5 +97,19 @@ rồi sau đó dán tiếp:
 ```
 
 **Không** chạy WF2 và WF4 cùng một chat.
+
+Lỗi pha B (không thấy GD / sửa giờ…)? Chạy lại **chỉ B**, không gửi A:
+
+```text
+/phab
+```
+
+Hoặc dán lại list kèm lệnh:
+
+```text
+/phab
+1. Trừ
+/bdsd …
+```
 
 Tắt: `/wf4 off`
