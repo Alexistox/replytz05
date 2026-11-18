@@ -530,6 +530,18 @@ class BankTransactionUserbot {
     this.processingMessages.add(messageKey);
 
     try {
+      // /wf* off|on|status|/phab — xử lý lệnh TRƯỚC hearing list
+      // (khi WF4 đang await_list, hearing cũ nuốt luôn `/wf4 off` → «Không parse được mục»)
+      const earlyCmd = Utils.parseCommand(messageText);
+      const isWfControlCmd =
+        earlyCmd &&
+        /^\/(wf[1-4](bot)?|wfbot|phab)$/.test(String(earlyCmd.command || ''));
+      if (isWfControlCmd) {
+        this.processedMessages.set(messageKey, currentTime);
+        await this.handleCommand(messageText, chatId, messageId, message);
+        return;
+      }
+
       // WF4 / WF2: list /bdsd — route theo session (mutex, tránh cướp tin)
       if (await this.isWfCcAllowed(message, chatId)) {
         const chatKeyList = String(chatId);

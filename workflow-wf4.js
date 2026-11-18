@@ -1001,6 +1001,12 @@ class Wf4Runner extends WfRunner {
     const session = this.getSession(chatId);
     if (!session) return false;
 
+    // Không nuốt lệnh điều khiển (/wf4 off, /phab, …)
+    const first = String(messageText || '').trim().split(/\s+/)[0] || '';
+    if (/^\/?(wf[1-4](bot)?|wfbot|phab)(@\w+)?$/i.test(first)) {
+      return false;
+    }
+
     if (this.isBusy(chatId)) {
       if (looksLikeWf4List(messageText)) {
         session.queuedText = messageText;
