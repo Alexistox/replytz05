@@ -9,7 +9,7 @@
  * 1) /start → bấm button đầu → button thứ 2
  * 2) User chọn filter: "tài khoản còn hạn" hoặc "tài khoản hết hạn"
  * 3) Liệt kê button tài khoản → user chọn
- * 4) "chỉnh sửa giao dịch" / "chỉnh sửa GD" → "chỉnh giao dịch" / "chỉnh GD"
+ * 4) "chỉnh sửa giao dịch" → "chỉnh giao dịch"
  * 5) Lặp từng giao dịch: so sánh thời gian trong Nội dung vs mục thời gian;
  *    trùng → bỏ qua; khác → chỉnh thời gian theo Nội dung; báo cáo về chat.
  */
@@ -37,6 +37,127 @@ const BTN = {
   prevPage:
     /tr[uư][oớ]c|prev|before|trang\s*tr[uư][oớ]c|«|‹|⬅️|v[eề]\s*tr[uư][oớ]c/i,
 };
+
+const BDSD_LINE = /^\s*\/bdsd\s+\S+/i;
+const KIND_LINE_RE = /^\s*\d+\.\s*(C[oộ]ng|Tr[uừ]|Cong|Tru)\s*$/im;
+
+function normalizeKind(raw) {
+  const s = String(raw || '')
+    .normalize('NFC')
+    .toLowerCase();
+  if (/tr[uừ]|tru/.test(s)) return 'tru';
+  return 'cong';
+}
+
+/** Parse list nhãn Cộng/Trừ + /bdsd (logic pha B). */
+function extractAnnotatedItems(text) {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const items = [];
+  let pendingKind = null;
+  for (const line of lines) {
+    if (
+      /^\/(wf[1-4](bot)?|wfbot|phab)(\s|$|@)/i.test(line) &&
+      !BDSD_LINE.test(line)
+    ) {
+      continue;
+    }
+    const km = line.match(KIND_LINE_RE);
+    if (km) {
+      pendingKind = normalizeKind(km[1]);
+      continue;
+    }
+    if (BDSD_LINE.test(line)) {
+      if (!pendingKind) {
+        const err = new Error(
+          'Mỗi dòng `/bdsd` cần có nhãn trước đó, vd `2. Trừ` rồi mới `/bdsd …`.'
+        );
+        err.code = 'WF_LIST_FORMAT';
+        throw err;
+      }
+      items.push({ kind: pendingKind, line: line.replace(/^\s+/, '') });
+      pendingKind = null;
+    }
+  }
+  return items;
+}
+
+function looksLikeAnnotatedList(text) {
+  const raw = String(text || '');
+  const hasKind = /^\s*\d+\.\s*(C[oộ]ng|Tr[uừ]|Cong|Tru)\s*$/im.test(raw);
+  const hasBdsd = /^\s*\/bdsd\s+\S+/im.test(raw);
+  if (!hasKind || !hasBdsd) return false;
+  try {
+    return extractAnnotatedItems(raw).length > 0;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/** /bdsd phone pass NAME STK amount GD:… */
+function parseBdsdFields(line) {
+  const raw = String(line || '').trim();
+  const m = raw.match(
+    /^\/bdsd\s+(\S+)\s+(\S+)\s+(.+?)\s+(\d{8,16})\s+(\d+)\s+(.*)$/i
+  );
+  if (m) {
+    return {
+      phone: m[1],
+      pass: m[2],
+      name: m[3].trim(),
+      stk: m[4],
+      amountDigits: String(m[5]).replace(/\D/g, ''),
+      content: m[6].trim(),
+    };
+  }
+  const gdIdx = raw.search(/\bGD\s*:/i);
+  const head = gdIdx >= 0 ? raw.slice(0, gdIdx) : raw;
+  const content = gdIdx >= 0 ? raw.slice(gdIdx).trim() : '';
+  const nums = [...head.matchAll(/\b(\d+)\b/g)].map((x) => x[1]);
+  const amountDigits = nums.length ? nums[nums.length - 1] : '';
+  const stk = nums.length >= 2 ? nums[nums.length - 2] : '';
+  const phone = nums.find((n) => n.length >= 9 && n.length <= 11) || '';
+  return { phone, pass: '', name: '', stk, amountDigits, content };
+}
+
+function contentNeedle(content) {
+  const c = String(content || '');
+  const gdCode =
+    c.match(/\bGD\s+([A-Z0-9]{8,})\b/i) ||
+    c.match(/\b(FT\d+)\b/i) ||
+    c.match(/\b(6319[A-Z0-9]+)\b/i);
+  if (gdCode) return gdCode[1];
+  const compact = c.match(/\d{6,8}[-–—]\d{1,2}:\d{2}/);
+  if (compact) return compact[0];
+  return c.replace(/^GD\s*:\s*/i, '').slice(0, 40).trim();
+}
+
+function listHasPhone(textOrItems) {
+  let items = textOrItems;
+  if (!Array.isArray(items)) {
+    if (!looksLikeAnnotatedList(textOrItems)) return false;
+    try {
+      items = extractAnnotatedItems(textOrItems);
+    } catch (_e) {
+      return false;
+    }
+  }
+  return items.some((it) => {
+    const f = parseBdsdFields(it.line);
+    return String(f.phone || '').replace(/\D/g, '').length >= 9;
+  });
+}
+
+/**
+ * `/wf1` + list Cộng/Trừ + /bdsd có SĐT → WF1 dùng logic pha B (không phải WF4 hearing).
+ */
+function isWf1AnnotatedRepairMessage(text) {
+  const raw = String(text || '');
+  if (!/^\s*\/wf1(?!bot)\b/im.test(raw)) return false;
+  return looksLikeAnnotatedList(raw) && listHasPhone(raw);
+}
 
 /**
  * Formats trong Nội dung / Thời gian:
@@ -295,6 +416,73 @@ class WfRunner {
     this.cmd = '/' + this.id;
     this.cmdBot = '/' + this.id + 'bot';
     this.sessions = new Map();
+    /** Chống FLOOD_WAIT GetHistory: tối thiểu ms giữa 2 lần getMessages / peer */
+    this.histMinGapMs = Number(opts.histMinGapMs) > 0 ? Number(opts.histMinGapMs) : 550;
+    /** @type {Map<string, { lastAt: number, lastLimit: number, lastMsgs: any, inflight: Promise<any>|null }>} */
+    this._histGate = new Map();
+  }
+
+  _peerHistKey(peer) {
+    if (peer == null) return 'null';
+    if (typeof peer === 'object') {
+      if (peer.id != null) return `id:${peer.id}`;
+      if (peer.username) return `u:${peer.username}`;
+    }
+    return String(peer);
+  }
+
+  /**
+   * getMessages có throttle + gộp request trùng (tránh Sleeping for Ns on flood wait GetHistory).
+   * Logic nghiệp vụ không đổi — chỉ giới hạn tần suất GetHistory.
+   */
+  async getMessagesSafe(peer, opts = {}) {
+    const limit = Math.max(1, Number(opts.limit) || 10);
+    const minGap = Math.max(200, Number(opts.minGapMs) || this.histMinGapMs);
+    const force = opts.force === true;
+    const key = this._peerHistKey(peer);
+    let gate = this._histGate.get(key);
+    if (!gate) {
+      gate = { lastAt: 0, lastLimit: 0, lastMsgs: null, inflight: null };
+      this._histGate.set(key, gate);
+    }
+
+    if (gate.inflight) {
+      try {
+        await gate.inflight;
+      } catch (_e) {
+        /* fetch lỗi — caller bên dưới sẽ thử lại */
+      }
+      if (
+        !force &&
+        gate.lastMsgs &&
+        gate.lastLimit >= limit &&
+        Date.now() - gate.lastAt < minGap
+      ) {
+        return gate.lastMsgs;
+      }
+    }
+
+    const elapsed = Date.now() - gate.lastAt;
+    if (!force && gate.lastAt > 0 && elapsed < minGap) {
+      if (gate.lastMsgs && gate.lastLimit >= limit) {
+        return gate.lastMsgs;
+      }
+      await sleep(minGap - elapsed);
+    }
+
+    const run = (async () => {
+      const msgs = await this.bot.client.getMessages(peer, { limit });
+      gate.lastMsgs = msgs;
+      gate.lastLimit = limit;
+      gate.lastAt = Date.now();
+      return msgs;
+    })();
+    gate.inflight = run;
+    try {
+      return await run;
+    } finally {
+      if (gate.inflight === run) gate.inflight = null;
+    }
   }
 
   extractContentTime(text) {
@@ -385,7 +573,7 @@ class WfRunner {
   }
 
   async getLatestMessage(peer) {
-    const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+    const msgs = await this.getMessagesSafe(peer, { limit: 8 });
     return msgs && msgs[0] ? msgs[0] : null;
   }
 
@@ -395,7 +583,184 @@ class WfRunner {
     return flattenButtons(rows);
   }
 
+  buttonFingerprint(flat) {
+    return (flat || []).map((b) => String(b.text || '')).join('||');
+  }
+
+  /**
+   * Chờ tin có keyboard. Quan trọng: không lấy keyboard CŨ.
+   * - afterId: chỉ nhận tin id > afterId, hoặc cùng id nhưng đổi nút (bot edit)
+   * - notFingerprint: từ chối nếu bộ nút giống màn trước
+   */
+  async waitForMessageWithButtons(
+    peer,
+    {
+      minButtons = 1,
+      timeoutMs = 15000,
+      afterId = 0,
+      notFingerprint = null,
+      allowSameIdChanged = true,
+      requireButtons = true,
+    } = {}
+  ) {
+    const Utils = require('./utils');
+    const deadline = Date.now() + timeoutMs;
+    let lastCand = null;
+    while (Date.now() < deadline) {
+      const msgs = await this.getMessagesSafe(peer, { limit: 12 });
+      for (const m of msgs || []) {
+        if (!m) continue;
+        const flat = await this.getButtons(m);
+        const fp = this.buttonFingerprint(flat);
+        const enough = flat.length >= minButtons;
+        const changed = notFingerprint != null && fp && fp !== notFingerprint;
+        const newer = !afterId || m.id > afterId;
+        const sameIdNewKeys =
+          allowSameIdChanged &&
+          afterId &&
+          m.id === afterId &&
+          changed &&
+          enough;
+
+        if (requireButtons && !enough) continue;
+        if (notFingerprint != null && fp === notFingerprint) continue;
+
+        if (newer && enough) {
+          Utils.log(
+            `${this.label} keyboard sẵn sàng #${m.id} (${flat.length} nút): ${flat
+              .map((b) => b.text)
+              .slice(0, 4)
+              .join(' | ')}`
+          );
+          return m;
+        }
+        if (sameIdNewKeys) {
+          Utils.log(
+            `${this.label} keyboard đổi trên #${m.id}: ${flat
+              .map((b) => b.text)
+              .slice(0, 4)
+              .join(' | ')}`
+          );
+          return m;
+        }
+        // Chỉ giữ candidate đúng afterId — tránh dính KB panel cũ trước /start
+        if (enough && newer) lastCand = m;
+      }
+      // Không có nút (prompt nhập text) nhưng tin mới hơn — chấp nhận nếu không requireButtons
+      if (!requireButtons && afterId) {
+        for (const m of msgs || []) {
+          if (m && m.id > afterId) return m;
+        }
+      }
+      await sleep(350);
+    }
+    // Không trả lastCand nếu vẫn đúng fingerprint cũ (tránh bấm nhầm nút 2 trên màn 1)
+    if (lastCand && notFingerprint != null) {
+      const flatL = await this.getButtons(lastCand);
+      if (this.buttonFingerprint(flatL) === notFingerprint) {
+        return null;
+      }
+    }
+    return lastCand || (await this.getLatestMessage(peer));
+  }
+
+  /** Chờ keyboard ổn định (2 lần đọc giống nhau). afterId: chỉ nhận tin sau /start. */
+  async waitForStableKeyboard(
+    peer,
+    { minButtons = 1, timeoutMs = 12000, afterId = 0 } = {}
+  ) {
+    const Utils = require('./utils');
+    const deadline = Date.now() + timeoutMs;
+    let prevFp = null;
+    let stableMsg = null;
+    while (Date.now() < deadline) {
+      const msg = await this.waitForMessageWithButtons(peer, {
+        minButtons,
+        timeoutMs: Math.min(3000, Math.max(500, deadline - Date.now())),
+        afterId,
+      });
+      if (!msg || (afterId && msg.id <= afterId)) {
+        await sleep(250);
+        continue;
+      }
+      const flat = await this.getButtons(msg);
+      const fp = this.buttonFingerprint(flat);
+      if (fp && fp === prevFp && flat.length >= minButtons) {
+        Utils.log(
+          `${this.label} KB ổn định #${msg.id} (${flat.length} nút): ${flat
+            .map((b) => b.text)
+            .slice(0, 4)
+            .join(' | ')}`
+        );
+        return msg;
+      }
+      prevFp = fp;
+      stableMsg = msg;
+      await sleep(350);
+    }
+    if (stableMsg && afterId && stableMsg.id <= afterId) return null;
+    return stableMsg;
+  }
+
+  /** Đảm bảo msg có đủ nút; nếu thiếu thì chờ tin/keyboard phù hợp (không dính màn cũ). */
+  async ensureButtons(
+    msg,
+    peer,
+    { minButtons = 1, timeoutMs = 12000, afterId = 0, notFingerprint = null } = {}
+  ) {
+    const flat = await this.getButtons(msg);
+    const fp = this.buttonFingerprint(flat);
+    const okFp = notFingerprint == null || fp !== notFingerprint;
+    if (flat.length >= minButtons && okFp && (!afterId || msg?.id > afterId || msg?.id === afterId)) {
+      // Nếu yêu cầu màn mới (afterId) mà msg vẫn là tin cũ cùng fingerprint → phải chờ
+      if (afterId && msg?.id <= afterId && (!notFingerprint || fp === notFingerprint)) {
+        /* fall through */
+      } else if (flat.length >= minButtons && okFp) {
+        return msg;
+      }
+    }
+    if (!peer) return msg;
+    const Utils = require('./utils');
+    Utils.log(
+      `${this.label} chờ keyboard (≥${minButtons}${afterId ? `, sau #${afterId}` : ''}) — hiện ${flat.length || 0} nút`
+    );
+    return (
+      (await this.waitForMessageWithButtons(peer, {
+        minButtons,
+        timeoutMs,
+        afterId,
+        notFingerprint,
+      })) || msg
+    );
+  }
+
   async clickButton(msg, target, peer) {
+    // Chờ keyboard trên ĐÚNG màn hiện tại — không nhảy về tin cũ chỉ vì đủ số nút
+    if (typeof target === 'number') {
+      msg = await this.ensureButtons(msg, peer, {
+        minButtons: target + 1,
+        afterId: 0,
+        notFingerprint: null,
+      });
+    } else {
+      msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
+      let flatTry = await this.getButtons(msg);
+      if (!findButton(flatTry, target) && peer) {
+        // Nút chưa có trên msg — chờ tin có đúng nút (không dùng fingerprint cũ)
+        const deadline = Date.now() + 12000;
+        while (Date.now() < deadline) {
+          const cand = await this.waitForMessageWithButtons(peer, {
+            minButtons: 1,
+            timeoutMs: 2000,
+          });
+          if (cand && findButton(await this.getButtons(cand), target)) {
+            msg = cand;
+            break;
+          }
+          await sleep(250);
+        }
+      }
+    }
     const flat = await this.getButtons(msg);
     const btn = findButton(flat, target);
     if (!btn) {
@@ -405,15 +770,235 @@ class WfRunner {
     return this.clickAt(msg, btn.row, btn.col, peer);
   }
 
-  /** Bấm đúng ô (row/col) — dùng khi nhiều GD trùng tên trên list. */
-  async clickAt(msg, row, col, peer) {
+  /**
+   * Bấm đúng ô (row/col).
+   * @param {{ expectPrompt?: boolean }} [opts]
+   *   expectPrompt=true (sau «Thời gian»): KHÔNG chờ keyboard — chỉ nghỉ ngắn rồi lấy tin mới.
+   */
+  async clickAt(msg, row, col, peer, opts = {}) {
+    const expectPrompt = opts.expectPrompt === true;
+    if (peer && !expectPrompt) {
+      const flat = await this.getButtons(msg);
+      if (!flat.length) {
+        msg = await this.ensureButtons(msg, peer, { minButtons: 1 });
+      }
+    }
+    const beforeId = msg?.id || 0;
+    const beforeFp = this.buttonFingerprint(await this.getButtons(msg));
     await msg.click({ i: row, j: col });
-    await sleep(1800);
-    return this.getLatestMessage(peer);
+    if (!peer) {
+      await sleep(250);
+      return null;
+    }
+
+    // Nhập Thời gian: bot hỏi text, không có nút — đừng poll keyboard
+    if (expectPrompt) {
+      await sleep(300);
+      const msgs = await this.getMessagesSafe(peer, { limit: 6 });
+      for (const m of msgs || []) {
+        if (m && m.id > beforeId) return m;
+      }
+      return (await this.getLatestMessage(peer)) || msg;
+    }
+
+    await sleep(250);
+    const Utils = require('./utils');
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const msgs = await this.getMessagesSafe(peer, { limit: 10 });
+      for (const m of msgs || []) {
+        if (!m) continue;
+        const flat = await this.getButtons(m);
+        const fp = this.buttonFingerprint(flat);
+        const newer = m.id > beforeId;
+        const sameIdNewKeys =
+          m.id === beforeId && flat.length && fp && fp !== beforeFp;
+
+        if ((newer || sameIdNewKeys) && flat.length) {
+          if (fp === beforeFp && !newer) continue;
+          Utils.log(
+            `${this.label} sau click → KB #${m.id} (${flat.length} nút)`
+          );
+          return m;
+        }
+        if (newer && !flat.length) {
+          const body = String(m.message || m.text || '');
+          if (body.length) {
+            Utils.log(
+              `${this.label} sau click → prompt #${m.id}: ${body.slice(0, 60)}`
+            );
+            return m;
+          }
+        }
+      }
+      // Poll thưa hơn — GetHistory đã throttle; tránh spam khi cache chưa đổi
+      await sleep(450);
+    }
+    return (await this.getLatestMessage(peer)) || msg;
   }
 
   async clickIndex(msg, index, peer) {
     return this.clickButton(msg, index, peer);
+  }
+
+  /**
+   * /start → chỉ nhận KB tin MỚI sau /start → bấm nút đầu (index 0) → chờ màn mới → bấm nút 2 (index 1).
+   * Lỗi cũ: bot B chậm / tin cũ còn KB → tưởng là màn 1 rồi bấm index 1 («button 2») trên panel sai.
+   */
+  async startAndClickFirstTwo(peer, controlChatId, replyTo) {
+    const Utils = require('./utils');
+    let beforeStartId = 0;
+    try {
+      beforeStartId = (await this.getLatestMessage(peer))?.id || 0;
+    } catch (_e) {
+      beforeStartId = 0;
+    }
+
+    await this.bot.client.sendMessage(peer, { message: '/start' });
+    Utils.log(`${this.label} /start gửi (ignore KB id≤${beforeStartId})`);
+    await sleep(700);
+
+    let msg = await this.waitForStableKeyboard(peer, {
+      minButtons: 1,
+      timeoutMs: 15000,
+      afterId: beforeStartId,
+    });
+    if (!msg || !(await this.getButtons(msg)).length || msg.id <= beforeStartId) {
+      beforeStartId = (await this.getLatestMessage(peer))?.id || beforeStartId;
+      await this.bot.client.sendMessage(peer, { message: '/start' });
+      await sleep(900);
+      msg = await this.waitForStableKeyboard(peer, {
+        minButtons: 1,
+        timeoutMs: 12000,
+        afterId: beforeStartId,
+      });
+    }
+    if (!msg || !(await this.getButtons(msg)).length || msg.id <= beforeStartId) {
+      throw new Error(
+        `Không nhận được keyboard MỚI sau /start (trước #${beforeStartId}) — tránh bấm nhầm panel cũ`
+      );
+    }
+
+    let flat0 = await this.getButtons(msg);
+    const fp0 = this.buttonFingerprint(flat0);
+    const startMsgId = msg.id;
+    Utils.log(
+      `${this.label} màn 1 SAU /start #${startMsgId} (${flat0.length} nút): ${flat0
+        .map((b) => b.text)
+        .slice(0, 6)
+        .join(' | ')}`
+    );
+    if (controlChatId) {
+      await this.notify(
+        controlChatId,
+        `👆 Bấm button đầu tiên: «${flat0[0]?.text || '?'}»`,
+        replyTo
+      );
+    }
+
+    // Bấm ĐÚNG nút đầu (row/col của flat[0]) — không qua clickIndex có thể lệch msg
+    let moved = false;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      flat0 = await this.getButtons(msg);
+      if (!flat0.length) {
+        msg = await this.waitForStableKeyboard(peer, {
+          minButtons: 1,
+          timeoutMs: 8000,
+          afterId: beforeStartId,
+        });
+        flat0 = await this.getButtons(msg);
+      }
+      if (this.buttonFingerprint(flat0) !== fp0 && flat0.length) {
+        moved = true;
+        break;
+      }
+      const first = flat0[0];
+      if (!first) throw new Error('Màn 1 không có nút để bấm');
+      Utils.log(
+        `${this.label} bấm NÚT ĐẦU (lần ${attempt}) [${first.row},${first.col}] «${first.text}» trên #${msg.id}`
+      );
+      const beforeClickId = msg.id;
+      msg = await this.clickAt(msg, first.row, first.col, peer);
+      await sleep(350);
+
+      // Chỉ chấp nhận màn/KB khác fp0
+      let flatNow = await this.getButtons(msg);
+      let fpNow = this.buttonFingerprint(flatNow);
+      if (fpNow && fpNow !== fp0) {
+        moved = true;
+        break;
+      }
+      const after = await this.waitForMessageWithButtons(peer, {
+        minButtons: 1,
+        timeoutMs: 8000,
+        afterId: beforeClickId,
+        notFingerprint: fp0,
+      });
+      if (after && after.id >= startMsgId) {
+        const fpA = this.buttonFingerprint(await this.getButtons(after));
+        if (fpA && fpA !== fp0) {
+          msg = after;
+          moved = true;
+          break;
+        }
+      }
+      // Lấy lại đúng tin /start menu
+      msg =
+        (await this.waitForMessageWithButtons(peer, {
+          minButtons: 1,
+          timeoutMs: 5000,
+          afterId: beforeStartId,
+        })) || msg;
+      Utils.log(
+        `${this.label} sau nút đầu chưa đổi màn (lần ${attempt}) — thử lại`
+      );
+    }
+    if (!moved) {
+      throw new Error(
+        'Đã bấm nút đầu nhưng panel chưa đổi — dừng (tránh bấm button 2 trên panel start)'
+      );
+    }
+
+    let flat2 = await this.getButtons(msg);
+    // Ổn định màn 2 trước khi bấm (nhanh hơn — đã có fp khác màn 1)
+    msg =
+      (await this.waitForStableKeyboard(peer, {
+        minButtons: 1,
+        timeoutMs: 5000,
+        afterId: startMsgId,
+      })) || msg;
+    flat2 = await this.getButtons(msg);
+    if (this.buttonFingerprint(flat2) === fp0) {
+      throw new Error(
+        `Chưa sang màn 2 (vẫn: ${flat2.map((b) => b.text).slice(0, 3).join(' | ')})`
+      );
+    }
+    if (flat2.length < 2) {
+      throw new Error(
+        `Màn 2 chỉ có ${flat2.length} nút. Hiện: ${flat2.map((b) => b.text).join(' | ') || '(không)'}`
+      );
+    }
+
+    const second = flat2[1];
+    const fp1 = this.buttonFingerprint(flat2);
+    if (controlChatId) {
+      await this.notify(
+        controlChatId,
+        `👆 Bấm button thứ 2: «${second.text}»`,
+        replyTo
+      );
+    }
+    Utils.log(
+      `${this.label} màn 2 #${msg.id} (${flat2.length} nút) → bấm NÚT 2 [${second.row},${second.col}] «${second.text}»`
+    );
+    msg = await this.clickAt(msg, second.row, second.col, peer);
+
+    msg = await this.ensureButtons(msg, peer, {
+      minButtons: 1,
+      timeoutMs: 15000,
+      notFingerprint: fp1,
+    });
+    return msg || (await this.getLatestMessage(peer));
   }
 
   /**
@@ -457,9 +1042,11 @@ class WfRunner {
   }
 
   /**
-   * /wf1|/wf2 on|off|status|help
+   * /wf1|/wf3 on|off|status|help
+   * (/wf1 + list Cộng/Trừ → index route sang WF4 pha B, không xử lý ở đây)
    */
-  async handleWfCommand(args, chatId, messageId) {
+  async handleWfCommand(args, chatId, messageId, rawText = '') {
+    void rawText;
     const action = String(args[0] || 'help').toLowerCase();
     if (action === 'off' || action === 'stop' || action === 'cancel') {
       this.clearSession(chatId);
@@ -501,7 +1088,11 @@ class WfRunner {
         );
         return;
       }
-      await this.bot.sendReply(chatId, messageId, `🚀 Bắt đầu ${this.label}…`);
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        `🚀 Bắt đầu ${this.label} ở chat \`${chatId}\` — chỉ chạy tại chat này.`
+      );
       this.runUntilAccountPick(chatId, messageId).catch(async (err) => {
         this.clearSession(chatId);
         await this.notify(chatId, `❌ ${this.label} lỗi: ${err.message}`, messageId);
@@ -517,6 +1108,9 @@ class WfRunner {
         '',
         `\`${this.cmdBot} @bot\` — đặt bot cho ${this.label}`,
         `\`${this.cmd} on\` — chạy workflow sửa thời gian GD`,
+        this.id === 'wf1'
+          ? `\`/wf1\` + list \`N. Cộng|Trừ\` + \`/bdsd …\` (có SĐT) — vào **pha B WF4** (logic WF1+/bdsd trên bot B)`
+          : '',
         `\`${this.cmd} off\` — hủy`,
         `\`${this.cmd} status\``,
         '',
@@ -524,7 +1118,9 @@ class WfRunner {
           ? 'Sửa thời gian **có giây** (vd `15/11/2026 18:34:26`).'
           : 'Sửa thời gian **không giây** (vd `15/11/2026 18:34`).',
         'WF2 (gửi `/bdsd`) — `/wf2` / `/wf2bot`. WF3 (có giây) — `/wf3` / `/wf3bot`.',
-      ].join('\n')
+      ]
+        .filter(Boolean)
+        .join('\n')
     );
   }
 
@@ -548,16 +1144,7 @@ class WfRunner {
     });
 
     await this.notify(controlChatId, `📤 Gửi /start tới ${peerCfg}…`, replyTo);
-    await this.bot.client.sendMessage(peer, { message: '/start' });
-    await sleep(2000);
-    let msg = await this.getLatestMessage(peer);
-    if (!msg) throw new Error('Không nhận được tin từ bot sau /start');
-
-    await this.notify(controlChatId, '👆 Bấm button đầu tiên…', replyTo);
-    msg = await this.clickIndex(msg, 0, peer);
-
-    await this.notify(controlChatId, '👆 Bấm button thứ 2…', replyTo);
-    msg = await this.clickIndex(msg, 1, peer);
+    let msg = await this.startAndClickFirstTwo(peer, controlChatId, replyTo);
 
     const flatFilters = await this.getButtons(msg);
     const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
@@ -616,6 +1203,13 @@ class WfRunner {
   async handleUserAccountPick(controlChatId, messageText, messageId) {
     const session = this.getSession(controlChatId);
     if (!session) return false;
+    // Chỉ nhận chọn TK đúng chat đã bật WF
+    if (
+      session.controlChatId &&
+      String(session.controlChatId) !== String(controlChatId)
+    ) {
+      return false;
+    }
     if (
       session.phase !== 'await_account_filter' &&
       session.phase !== 'await_account'
@@ -726,6 +1320,55 @@ class WfRunner {
     return true;
   }
 
+  /**
+   * Sau chọn TK: bấm «Chỉnh sửa GD/giao dịch» nếu có;
+   * chỉ bấm thêm «Chỉnh Giao Dịch/GD» khi nút đó còn trên màn hình.
+   * (BankAo đổi menu thành «Chỉnh sửa GD» — một bước vào list, không còn bước 2.)
+   */
+  async enterEditTxFromAccountMenu(msg, peer, controlChatId, replyTo) {
+    let flat = await this.getButtons(msg);
+    for (let i = 0; i < 8; i++) {
+      if (
+        findButton(flat, BTN.editTxMenu) ||
+        findButton(flat, BTN.editTx) ||
+        this.isTxListScreen(msg, flat)
+      ) {
+        break;
+      }
+      await sleep(400);
+      msg = (await this.getLatestMessage(peer)) || msg;
+      flat = await this.getButtons(msg);
+    }
+
+    const menu = findButton(flat, BTN.editTxMenu);
+    if (menu) {
+      await this.notify(controlChatId, `👆 ${menu.text}…`, replyTo);
+      msg = await this.clickButton(msg, menu.text, peer);
+      flat = await this.getButtons(msg);
+    }
+
+    const edit = findButton(flat, BTN.editTx);
+    if (edit) {
+      await this.notify(controlChatId, `👆 ${edit.text}…`, replyTo);
+      msg = await this.clickButton(msg, edit.text, peer);
+      return msg;
+    }
+
+    if (menu) {
+      // Đã bấm Chỉnh sửa GD → thường vào thẳng list LSGD
+      return msg;
+    }
+
+    flat = await this.getButtons(msg);
+    if (this.isTxListScreen(msg, flat)) return msg;
+
+    const labels =
+      flat.map((b, i) => `${i + 1}. ${b.text}`).join('\n') || '(không có)';
+    throw new Error(
+      `Không thấy nút Chỉnh sửa GD / Chỉnh Giao Dịch.\nHiện có:\n${labels}`
+    );
+  }
+
   async continueAfterAccount(controlChatId) {
     const session = this.getSession(controlChatId);
     if (!session) return;
@@ -734,16 +1377,7 @@ class WfRunner {
     let msg = session.lastMsg || (await this.getLatestMessage(peer));
     // Click account button
     msg = await this.clickButton(msg, session.chosenAccount, peer);
-
-    // Có bot có 2 bước (menu rồi chỉnh); bot test chỉ có "✏️ Chỉnh Giao Dịch"
-    const flatAfterAccount = await this.getButtons(msg);
-    if (findButton(flatAfterAccount, BTN.editTxMenu)) {
-      await this.notify(controlChatId, '👆 Chỉnh sửa giao dịch…', replyTo);
-      msg = await this.clickButton(msg, BTN.editTxMenu, peer);
-    }
-
-    await this.notify(controlChatId, '👆 Chỉnh giao dịch…', replyTo);
-    msg = await this.clickButton(msg, BTN.editTx, peer);
+    msg = await this.enterEditTxFromAccountMenu(msg, peer, controlChatId, replyTo);
 
     await this.processTransactionLoop(controlChatId, msg);
   }
@@ -781,7 +1415,7 @@ class WfRunner {
 
   /** Tìm message gần nhất còn button Quay lại (khi đang kẹt màn nhập text). */
   async findMessageWithBack(peer, limit = 12) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       const flat = await this.getButtons(m);
       if (findButton(flat, BTN.back)) return m;
@@ -895,7 +1529,7 @@ class WfRunner {
         if (back) {
           Utils.log(`${this.label} ensureTxList: còn chi tiết → Quay lại`);
           msg = await this.clickButton(msg, back.text, peer);
-          await sleep(1000);
+          await sleep(500);
           continue;
         }
       }
@@ -903,24 +1537,24 @@ class WfRunner {
       if (findButton(flat, BTN.editTxMenu)) {
         Utils.log(`${this.label} ensureTxList: vào Chỉnh sửa giao dịch`);
         msg = await this.clickButton(msg, BTN.editTxMenu, peer);
-        await sleep(1000);
+        await sleep(500);
         flat = await this.getButtons(msg);
       }
       if (findButton(flat, BTN.editTx)) {
         Utils.log(`${this.label} ensureTxList: vào Chỉnh Giao Dịch`);
         msg = await this.clickButton(msg, BTN.editTx, peer);
-        await sleep(1200);
+        await sleep(600);
         continue;
       }
       const found = await this.findTxListMessage(peer);
       if (found) return found;
-      await sleep(800);
+      await sleep(400);
     }
     return (await this.findTxListMessage(peer)) || (await this.getLatestMessage(peer)) || msg;
   }
 
   async findTxListMessage(peer, limit = 15) {
-    const msgs = await this.bot.client.getMessages(peer, { limit });
+    const msgs = await this.getMessagesSafe(peer, { limit });
     for (const m of msgs || []) {
       const flat = await this.getButtons(m);
       if (this.isTxListScreen(m, flat)) return m;
@@ -970,12 +1604,12 @@ class WfRunner {
 
         Utils.log(`${this.label} afterEdit Quay lại #${step}: ${backBtn.text}`);
         const beforeId = msg?.id || 0;
-        await sleep(300);
+        await sleep(200);
         msg = await this.clickButton(msg, backBtn.text, peer);
 
         // Chờ bảng/tin mới trước lần Quay lại tiếp (nếu cần)
-        for (let t = 0; t < 10; t++) {
-          await sleep(600);
+        for (let t = 0; t < 8; t++) {
+          await sleep(300);
           const latest = await this.getLatestMessage(peer);
           const flatL = await this.getButtons(latest);
           if (this.isTxListScreen(latest, flatL)) {
@@ -1002,14 +1636,14 @@ class WfRunner {
       const hasNext = !!findButton(flat, BTN.nextPage);
       if (txLike.length > 0 || hasNext) break;
       if (!findButton(flat, BTN.back)) {
-        await sleep(800);
+        await sleep(350);
         msg = (await this.getLatestMessage(peer)) || msg;
         continue;
       }
-      await sleep(800);
+      await sleep(300);
       msg = await this.clickButton(msg, BTN.back, peer);
     }
-    await sleep(800);
+    await sleep(300);
     return (await this.ensureTxList(msg, peer)) || msg;
   }
 
@@ -1364,8 +1998,8 @@ class WfRunner {
   async waitForUpdatedDetailTime(peer, targetTime, { beforeId = 0, oldTime = null } = {}) {
     const Utils = require('./utils');
     let lastSeen = null;
-    for (let i = 0; i < 10; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 12 });
+    for (let i = 0; i < 12; i++) {
+      const msgs = await this.getMessagesSafe(peer, { limit: 12 });
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
         const body = String(m.message || m.text || '');
@@ -1392,7 +2026,7 @@ class WfRunner {
           return m;
         }
       }
-      await sleep(700);
+      await sleep(400);
     }
     return lastSeen;
   }
@@ -1424,7 +2058,10 @@ class WfRunner {
       );
     }
     Utils.log(`${this.label} click Thời gian: ${timeBtn.text}`);
-    msg = await this.clickButton(msg, timeBtn.text, peer);
+    // Sau Thời gian bot hỏi nhập text — không chờ keyboard
+    msg = await this.clickAt(msg, timeBtn.row, timeBtn.col, peer, {
+      expectPrompt: true,
+    });
 
     const prompt = String(msg?.message || msg?.text || '');
     if (/t[eê]n\s*ng[uư][oờ]i|ng[uư][oờ]i\s*chuy[eể]n|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(prompt) && !/th[oờ]i\s*gian/i.test(prompt)) {
@@ -1434,41 +2071,57 @@ class WfRunner {
     }
 
     await this.bot.client.sendMessage(peer, { message: newTime });
-    await sleep(1000);
+    // BankAo: sau nhập giờ → bấm Quay lại tin MỚI NHẤT → rồi mới xác nhận Thời gian
+    await sleep(500);
 
-    // Thông báo sau nhập giờ → Quay lại tin mới nhất để commit (giống WF4)
     let newestWithBack = null;
-    for (let i = 0; i < 10; i++) {
-      const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+    for (let i = 0; i < 12; i++) {
+      const msgs = await this.getMessagesSafe(peer, { limit: 12 });
+      let best = null;
       for (const m of msgs || []) {
         if (!m || (beforeId && m.id <= beforeId)) continue;
         const flatM = await this.getButtons(m);
         const back = findButton(flatM, BTN.back) || findButton(flatM, BTN.backLoose);
         if (!back) continue;
-        newestWithBack = m;
+        if (!best || m.id > best.id) best = m;
+      }
+      if (best) {
+        newestWithBack = best;
         break;
       }
-      if (newestWithBack) break;
-      await sleep(600);
+      await sleep(400);
     }
 
-    if (newestWithBack) {
+    if (!newestWithBack) {
+      throw new Error(
+        'Sau nhập giờ không thấy tin mới có Quay lại — chưa commit thời gian'
+      );
+    }
+
+    {
       const flatN = await this.getButtons(newestWithBack);
       const backBtn = findButton(flatN, BTN.back) || findButton(flatN, BTN.backLoose);
       Utils.log(
-        `${this.label} sau nhập giờ → Quay lại tin mới #${newestWithBack.id}: ${backBtn.text}`
+        `${this.label} sau nhập giờ → Quay lại tin mới nhất #${newestWithBack.id}: ${backBtn.text}`
       );
-      await this.clickButton(newestWithBack, backBtn.text, peer);
-      await sleep(1200);
+      await this.clickAt(newestWithBack, backBtn.row, backBtn.col, peer);
+      await sleep(700);
     }
 
+    // Chỉ xác nhận thành công SAU khi đã Quay lại
     const updated = await this.waitForUpdatedDetailTime(peer, newTime, {
       beforeId,
       oldTime,
     });
-    if (updated) return updated;
+    if (updated) {
+      const rawOk = extractFieldTimeRaw(String(updated.message || updated.text || ''));
+      Utils.log(
+        `${this.label} xác nhận sau Quay lại: Thời gian=${rawOk || '?'} (cần ${newTime})`
+      );
+      return updated;
+    }
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       const latest = await this.getLatestMessage(peer);
       const body = String(latest?.message || latest?.text || '');
       const flatLatest = await this.getButtons(latest);
@@ -1477,10 +2130,764 @@ class WfRunner {
         const field = extractFieldTime(body, this.keepSeconds);
         if (fieldMatchesTarget(raw, field, newTime, this.keepSeconds)) return latest;
         if (field && oldTime && field !== oldTime) return latest;
+        if (raw) return latest;
       }
-      await sleep(700);
+      await sleep(400);
     }
     return (await this.findMessageWithBack(peer)) || (await this.getLatestMessage(peer));
+  }
+
+  // —— Logic pha B (list Cộng/Trừ + /bdsd): WF1 học để sửa theo list ——
+
+  findPagerPrevSafe(flat) {
+    const list = flat || [];
+    return (
+      list.find((b) =>
+        /tr[uư][oớ]c|prev|before|trang\s*tr[uư][oớ]c|v[eề]\s*tr[uư][oớ]c/i.test(b.text)
+      ) ||
+      list.find((b) => /^\s*«\s*$/.test(b.text) || /^\s*‹\s*$/.test(b.text)) ||
+      null
+    );
+  }
+
+  findPagerNextSafe(flat) {
+    const list = flat || [];
+    return (
+      list.find((b) =>
+        /ti[eế]p(\s*theo)?|next|sau|trang\s*sau|xem\s*th[eê]m|giao\s*d[iị]ch\s*ti[eế]p/i.test(
+          b.text
+        )
+      ) ||
+      list.find((b) => /^\s*»\s*$/.test(b.text) || /^\s*›\s*$/.test(b.text)) ||
+      null
+    );
+  }
+
+  phonesFromItems(items) {
+    const phones = [];
+    const seen = new Set();
+    for (const it of items || []) {
+      const p = String(parseBdsdFields(it.line).phone || '').replace(/\D/g, '');
+      if (p.length >= 9 && !seen.has(p)) {
+        seen.add(p);
+        phones.push(p);
+      }
+    }
+    return phones;
+  }
+
+  accountMatchesPhones(btnText, phones) {
+    const t = String(btnText || '');
+    if (!phones?.length) return false;
+    if (BTN.back.test(t) || /quay\s*l[aạ]i/i.test(t)) return false;
+    return phones.some((p) => p && t.includes(p));
+  }
+
+  isFlipConfirmScreen(msg) {
+    const body = String(msg?.message || msg?.text || '');
+    return (
+      /đ[ãa]\s*đ[oổ]i\s*lo[aạ]i\s*giao\s*d[iị]ch\s*th[aà]nh\s*tr[uừ]/i.test(body) ||
+      (/đ[oổ]i\s*lo[aạ]i/i.test(body) &&
+        /tr[uừ]\s*ti[eề]n/i.test(body) &&
+        /s[oố]\s*d[uư]/i.test(body))
+    );
+  }
+
+  async findFlipConfirmMessage(peer, limit = 10) {
+    const msgs = await this.getMessagesSafe(peer, { limit });
+    for (const m of msgs || []) {
+      if (this.isFlipConfirmScreen(m)) return m;
+    }
+    return null;
+  }
+
+  async findDetailMessage(peer, limit = 12) {
+    const msgs = await this.getMessagesSafe(peer, { limit });
+    for (const m of msgs || []) {
+      const body = String(m?.message || m?.text || '');
+      if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) continue;
+      if (this.isFlipConfirmScreen(m)) continue;
+      const flat = await this.getButtons(m);
+      if (findButton(flat, BTN.back)) return m;
+    }
+    return null;
+  }
+
+  async messageHasTimeButton(msg) {
+    const flat = await this.getButtons(msg);
+    return flat.some(
+      (b) =>
+        /th[oờ]i\s*gian/i.test(b.text) &&
+        !/ng[uư][oờ]i|s[oố]\s*ti[eề]n|n[oộ]i\s*dung/i.test(b.text)
+    );
+  }
+
+  detailMatchesItem(body, fields) {
+    if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body)) return false;
+    const info = bodyAmountInfo(body);
+    if (!info || !fields.amountDigits) return false;
+    if (info.digits !== fields.amountDigits) return false;
+    const raw = String(body || '');
+    const needle = contentNeedle(fields.content);
+    if (needle && raw.toLowerCase().includes(String(needle).toLowerCase())) {
+      return true;
+    }
+    if (fields.content) {
+      const chunk = fields.content.replace(/^GD\s*:\s*/i, '').slice(0, 28);
+      if (chunk && raw.toLowerCase().includes(chunk.toLowerCase())) return true;
+    }
+    if (fields.stk && raw.includes(fields.stk)) return true;
+    return !needle;
+  }
+
+  resolveContentTime(body, fields) {
+    return (
+      extractContentTime(body, this.keepSeconds) ||
+      (fields?.content ? extractContentTime(fields.content, this.keepSeconds) : null) ||
+      (fields?.content
+        ? extractContentTime(`Nội dung: ${fields.content}`, this.keepSeconds)
+        : null)
+    );
+  }
+
+  async editTypeToTru(detailMsg, peer) {
+    let msg = detailMsg;
+    const flat = await this.getButtons(msg);
+    const truBtn =
+      flat.find((b) => /lo[aạ]i\s*giao\s*d[iị]ch\s*:\s*tr[uừ]\s*ti[eề]n/i.test(b.text)) ||
+      flat.find((b) => /^tr[uừ]\s*ti[eề]n$/i.test(b.text)) ||
+      flat.find(
+        (b) => /tr[uừ]\s*ti[eề]n/i.test(b.text) && /lo[aạ]i|giao\s*d[iị]ch/i.test(b.text)
+      );
+    if (!truBtn) {
+      throw new Error(
+        `Không thấy nút Trừ tiền. Buttons: ${flat.map((b) => b.text).join(' | ') || '(không)'}`
+      );
+    }
+    const Utils = require('./utils');
+    Utils.log(`${this.label} click Trừ tiền: ${truBtn.text}`);
+    msg = await this.clickButton(msg, truBtn.text, peer);
+    await sleep(500);
+    for (let i = 0; i < 8; i++) {
+      const confirm =
+        (await this.findFlipConfirmMessage(peer)) ||
+        (this.isFlipConfirmScreen(await this.getLatestMessage(peer))
+          ? await this.getLatestMessage(peer)
+          : null);
+      if (confirm) return confirm;
+      await sleep(350);
+    }
+    return (await this.getLatestMessage(peer)) || msg;
+  }
+
+  async afterFlipBackThenReopenForTime(confirmMsg, peer, fields, page, session) {
+    let msg =
+      confirmMsg ||
+      (await this.findFlipConfirmMessage(peer)) ||
+      (await this.getLatestMessage(peer));
+    if (!this.isFlipConfirmScreen(msg)) {
+      const c = await this.findFlipConfirmMessage(peer);
+      if (c) msg = c;
+    }
+    const flat0 = await this.getButtons(msg);
+    const backBtn = findButton(flat0, BTN.back);
+    if (!backBtn) {
+      throw new Error(
+        `Sau đổi Trừ không thấy nút Quay lại. Body: ${String(msg?.message || msg?.text || '').slice(0, 120)}`
+      );
+    }
+    const Utils = require('./utils');
+    Utils.log(`${this.label} màn xác nhận Trừ → Quay lại: ${backBtn.text}`);
+    msg = await this.clickButton(msg, backBtn.text, peer);
+    await sleep(500);
+
+    for (let i = 0; i < 6; i++) {
+      let detail = await this.findDetailMessage(peer);
+      if (!detail) detail = await this.getLatestMessage(peer);
+      if (detail && (await this.messageHasTimeButton(detail))) {
+        const body = String(detail.message || detail.text || '');
+        const info = bodyAmountInfo(body);
+        if (
+          /S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(body) &&
+          (this.detailMatchesItem(body, fields) ||
+            (info && info.sign === '-') ||
+            /tr[uừ]\s*ti[eề]n/i.test(body))
+        ) {
+          return { detail, body, page };
+        }
+      }
+      await sleep(350);
+    }
+
+    msg = await this.ensureTxList(msg, peer);
+    msg = await this.goToFirstTxPageSafe(msg, peer);
+    const nav = await this.goToTxPageSafe(msg, peer, 1);
+    session.listMsg = nav.msg;
+    session.lastMsg = nav.msg;
+    const found = await this.findAndOpenListItem(session, fields, session.controlChatId);
+    if (!found) {
+      throw new Error('Sau đổi Trừ + Quay lại, không mở lại được GD để sửa thời gian');
+    }
+    return found;
+  }
+
+  async goToFirstTxPageSafe(msg, peer) {
+    msg = await this.ensureTxList(msg, peer);
+    for (let i = 0; i < 20; i++) {
+      const info = this.parseLsgdPage(msg);
+      if (info?.page === 1) return msg;
+      const flat = await this.getButtons(msg);
+      const prev = this.findPagerPrevSafe(flat);
+      if (!prev) break;
+      msg = await this.clickButton(msg, prev.text, peer);
+      await sleep(350);
+      msg =
+        (await this.findTxListMessage(peer)) ||
+        (await this.getLatestMessage(peer)) ||
+        msg;
+    }
+    return msg;
+  }
+
+  async goToTxPageSafe(msg, peer, targetPage) {
+    const target = Math.max(1, Number(targetPage) || 1);
+    msg = await this.ensureTxList(msg, peer);
+    for (let guard = 0; guard < 25; guard++) {
+      const info = this.parseLsgdPage(msg);
+      const cur = info?.page || 1;
+      const total = info?.total || null;
+      if (cur === target) return { msg, page: cur, total };
+      if (total != null && target > total) return { msg, page: cur, total };
+      const flat = await this.getButtons(msg);
+      if (cur < target) {
+        const next = this.findPagerNextSafe(flat);
+        if (!next) return { msg, page: cur, total };
+        msg = await this.clickButton(msg, next.text, peer);
+        await sleep(400);
+        msg =
+          (await this.findTxListMessage(peer)) ||
+          (await this.getLatestMessage(peer)) ||
+          msg;
+        continue;
+      }
+      const prev = this.findPagerPrevSafe(flat);
+      if (!prev) return { msg, page: cur, total };
+      msg = await this.clickButton(msg, prev.text, peer);
+      await sleep(400);
+      msg =
+        (await this.findTxListMessage(peer)) ||
+        (await this.getLatestMessage(peer)) ||
+        msg;
+    }
+    const info = this.parseLsgdPage(msg);
+    return { msg, page: info?.page || 1, total: info?.total || null };
+  }
+
+  async findAndOpenListItem(session, fields, controlChatId) {
+    const { peer, replyTo } = session;
+    const Utils = require('./utils');
+    let msg = session.listMsg || session.lastMsg || (await this.getLatestMessage(peer));
+    msg = await this.ensureTxList(msg, peer);
+    msg = await this.goToFirstTxPageSafe(msg, peer);
+    msg = await this.ensureTxList(msg, peer);
+    const startInfo = this.parseLsgdPage(msg);
+    Utils.log(
+      `${this.label} tìm GD ${fields.amountDigits || '?'} từ trang ${startInfo?.page || '?'}/${startInfo?.total || '?'}`
+    );
+
+    let page = 1;
+    let knownTotal = this.parseLsgdPage(msg)?.total || null;
+    const maxPages = knownTotal || 20;
+
+    for (let p = 0; p < maxPages; p++) {
+      const nav = await this.goToTxPageSafe(msg, peer, page);
+      msg = nav.msg;
+      page = nav.page || page;
+      if (nav.total) knownTotal = nav.total;
+
+      const flat = await this.getButtons(msg);
+      const txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
+      for (const btn of txButtons) {
+        const labelDigits = (
+          (btn.text.match(/(\d[\d.,]*)\s*đ/i) || [])[1] || ''
+        ).replace(/\D/g, '');
+        if (
+          fields.amountDigits &&
+          labelDigits &&
+          labelDigits !== fields.amountDigits
+        ) {
+          continue;
+        }
+
+        let detail = await this.clickAt(msg, btn.row, btn.col, peer);
+        // Chờ chi tiết thật nếu latest stale
+        if (!/S[uử]a\s*Giao\s*D[iị]ch\s*#/i.test(String(detail?.message || detail?.text || ''))) {
+          detail = (await this.findDetailMessage(peer)) || detail;
+        }
+        let body = String(detail?.message || detail?.text || '');
+        if (this.detailMatchesItem(body, fields)) {
+          return { detail, body, page, msg };
+        }
+        const info = bodyAmountInfo(body);
+        if (info && fields.amountDigits && info.digits === fields.amountDigits) {
+          const wantT = this.resolveContentTime('', fields);
+          const gotT = extractContentTime(body, this.keepSeconds);
+          if ((wantT && gotT && wantT === gotT) || page === 1) {
+            return { detail, body, page, msg };
+          }
+        }
+        msg = await this.returnToTransactionList(detail, peer, { afterEdit: false });
+        const backNav = await this.goToTxPageSafe(msg, peer, page);
+        msg = backNav.msg;
+      }
+
+      if (knownTotal != null && page >= knownTotal) break;
+      const flat2 = await this.getButtons(msg);
+      const nextBtn = this.findPagerNextSafe(flat2);
+      if (!nextBtn) break;
+      const before = this.parseLsgdPage(msg)?.page || page;
+      msg = await this.clickButton(msg, nextBtn.text, peer);
+      await sleep(700);
+      msg =
+        (await this.findTxListMessage(peer)) ||
+        (await this.getLatestMessage(peer)) ||
+        msg;
+      const after = this.parseLsgdPage(msg);
+      if (!after || after.page <= before) break;
+      page = after.page;
+      if (after.total) knownTotal = after.total;
+    }
+
+    await this.notify(
+      controlChatId,
+      `⚠️ Không thấy GD khớp tiền ${fields.amountDigits || '?'} (đã về trang 1 rồi quét).`,
+      replyTo
+    );
+    return null;
+  }
+
+  /** /wf1 + list (và WF4 pha B): tự chọn TK theo SĐT (còn hạn → hết hạn) rồi vào LSGD. */
+  async autoPickAccountByPhone(controlChatId, items, replyTo) {
+    const phones = this.phonesFromItems(items);
+    if (!phones.length) throw new Error('List không có SĐT để chọn tài khoản.');
+    const prev = this.getSession(controlChatId) || {};
+    const keep = {
+      peerA: prev.peerA,
+      totalSentA: prev.totalSentA || 0,
+      queuedText: prev.queuedText,
+      lastItems: prev.lastItems,
+      phabOnly: prev.phabOnly,
+    };
+    const peerCfg = this.getBotPeerConfig();
+    const peer = await this.resolvePeer(peerCfg);
+
+    // Giữ TK cũ nếu cùng SĐT (WF4 batch tiếp /phab)
+    if (
+      prev.chosenAccount &&
+      prev.peer &&
+      this.accountMatchesPhones(prev.chosenAccount, phones)
+    ) {
+      const session = {
+        ...prev,
+        ...keep,
+        phase: 'processing',
+        mode: 'annotated_list',
+        peerCfg,
+        peer: prev.peer || peer,
+        controlChatId: String(controlChatId),
+        replyTo,
+        items,
+        stats: {
+          fixed: 0,
+          skipped: 0,
+          errors: 0,
+          flipped: 0,
+          fixedTime: 0,
+          skippedFlip: 0,
+          skippedTime: 0,
+          sentA: prev.stats?.sentA || 0,
+        },
+        cancel: false,
+        chosenAccount: prev.chosenAccount,
+        chosenAccountFilter: prev.chosenAccountFilter,
+        accountButtons: prev.accountButtons,
+      };
+      this.sessions.set(String(controlChatId), session);
+      await this.notify(
+        controlChatId,
+        `♻️ Dùng lại TK: ${session.chosenAccount}`,
+        replyTo
+      );
+      try {
+        if (typeof this.openEditTxAfterAccount === 'function') {
+          const msg = await this.openEditTxAfterAccount(controlChatId);
+          session.listMsg = msg;
+          session.lastMsg = msg;
+        } else {
+          let msg =
+            session.listMsg ||
+            session.lastMsg ||
+            (await this.getLatestMessage(session.peer));
+          try {
+            msg = await this.ensureTxList(msg, session.peer);
+          } catch (_e) {
+            msg = await this.clickButton(msg, session.chosenAccount, session.peer);
+            msg = await this.enterEditTxFromAccountMenu(
+              msg,
+              session.peer,
+              controlChatId,
+              replyTo
+            );
+          }
+          session.listMsg = msg;
+          session.lastMsg = msg;
+        }
+        return session;
+      } catch (e) {
+        const Utils = require('./utils');
+        Utils.log(`${this.label} reuse TK fail: ${e.message} — chọn lại`);
+      }
+    }
+
+    const session = {
+      ...keep,
+      phase: 'processing',
+      mode: 'annotated_list',
+      peerCfg,
+      peer,
+      controlChatId: String(controlChatId),
+      replyTo,
+      items,
+      stats: {
+        fixed: 0,
+        skipped: 0,
+        errors: 0,
+        flipped: 0,
+        fixedTime: 0,
+        skippedFlip: 0,
+        skippedTime: 0,
+        sentA: prev.stats?.sentA || 0,
+      },
+      cancel: false,
+    };
+    this.sessions.set(String(controlChatId), session);
+
+    await this.notify(
+      controlChatId,
+      `📤 ${this.label} list: tìm TK SĐT \`${phones.join(', ')}\`…`,
+      replyTo
+    );
+    let msg = await this.startAndClickFirstTwo(peer, controlChatId, replyTo);
+
+    const flatFilters = await this.getButtons(msg);
+    const filterBtns = flatFilters.filter((b) => BTN.accountFilter.test(b.text));
+    if (!filterBtns.length) {
+      throw new Error(
+        `Không thấy còn hạn/hết hạn. Buttons: ${flatFilters.map((b) => b.text).join(' | ') || '(không)'}`
+      );
+    }
+    const ordered = [...filterBtns].sort((a, b) => {
+      const score = (t) =>
+        /c[oò]n\s*h[aạ]n/i.test(t) ? 0 : /h[eế]t\s*h[aạ]n/i.test(t) ? 1 : 2;
+      return score(a.text) - score(b.text);
+    });
+
+    for (let fi = 0; fi < ordered.length; fi++) {
+      const filterBtn = ordered[fi];
+      await this.notify(
+        controlChatId,
+        `🔎 Thử «${filterBtn.text}» — SĐT ${phones.join(', ')}…`,
+        replyTo
+      );
+      msg = session.lastMsg || (await this.getLatestMessage(peer));
+      const flatNow = await this.getButtons(msg);
+      if (!flatNow.some((b) => BTN.accountFilter.test(b.text))) {
+        const back = findButton(flatNow, BTN.back);
+        if (back) {
+          msg = await this.clickButton(msg, back.text, peer);
+          await sleep(700);
+        }
+      }
+      msg = await this.clickButton(msg, filterBtn.text, peer);
+      await sleep(800);
+      const flatAcc = await this.getButtons(msg);
+      const accountBtns = flatAcc.filter(
+        (b) => !BTN.back.test(b.text) && !BTN.accountFilter.test(b.text)
+      );
+      const match = accountBtns.find((b) => this.accountMatchesPhones(b.text, phones));
+      if (match) {
+        session.chosenAccount = match.text;
+        session.chosenAccountFilter = filterBtn.text;
+        session.lastMsg = msg;
+        session.accountButtons = accountBtns.map((b, i) => ({
+          index: i,
+          text: b.text,
+          row: b.row,
+          col: b.col,
+        }));
+        await this.notify(
+          controlChatId,
+          `✅ ${filterBtn.text}\n→ TK: ${match.text}`,
+          replyTo
+        );
+        msg = await this.clickButton(msg, match.text, peer);
+        msg = await this.enterEditTxFromAccountMenu(
+          msg,
+          peer,
+          controlChatId,
+          replyTo
+        );
+        session.listMsg = msg;
+        session.lastMsg = msg;
+        return session;
+      }
+      const backBtn =
+        findButton(flatAcc, BTN.back) ||
+        findButton(await this.getButtons(msg), BTN.back);
+      if (backBtn && fi < ordered.length - 1) {
+        msg = await this.clickButton(msg, backBtn.text, peer);
+        await sleep(800);
+        session.lastMsg = msg;
+      }
+    }
+    throw new Error(
+      `Không tìm thấy tài khoản cùng SĐT ${phones.join(', ')} ở còn hạn lẫn hết hạn.`
+    );
+  }
+
+  async startAnnotatedListRepair(rawText, chatId, messageId) {
+    if (!this.getBotPeerConfig()) {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        `❌ Chưa đặt bot. Dùng: \`${this.cmdBot} @bot\`.`
+      );
+      return;
+    }
+    if (this.getSession(chatId)?.phase === 'processing') {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        `⏳ ${this.label} đang chạy — \`${this.cmd} off\` rồi gửi lại.`
+      );
+      return;
+    }
+
+    let items;
+    try {
+      items = extractAnnotatedItems(rawText);
+    } catch (e) {
+      await this.bot.sendReply(chatId, messageId, `❌ Format list: ${e.message}`);
+      return;
+    }
+    if (!items.length || !listHasPhone(items)) {
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        '❗ Cần list `N. Cộng|Trừ` + `/bdsd …` có SĐT.'
+      );
+      return;
+    }
+
+    const nCong = items.filter((i) => i.kind === 'cong').length;
+    const nTru = items.filter((i) => i.kind === 'tru').length;
+    await this.notify(
+      chatId,
+      [
+        `🔧 **${this.label}** sửa theo list (logic pha B)`,
+        `${items.length} mục · Cộng ${nCong} · Trừ ${nTru}`,
+        'Tự chọn TK theo SĐT → Trừ (nếu cần) → sửa giờ.',
+      ].join('\n'),
+      messageId
+    );
+
+    this.runAnnotatedListRepair(chatId, items, messageId).catch(async (err) => {
+      this.clearSession(chatId);
+      await this.notify(chatId, `❌ ${this.label} lỗi: ${err.message}`, messageId);
+    });
+  }
+
+  /**
+   * Sửa theo list Cộng/Trừ + /bdsd (logic pha B).
+   * opts.continuous = true → WF4 giữ ON, gọi returnToAwaitList khi xong.
+   */
+  async runAnnotatedListRepair(controlChatId, items, replyTo, opts = {}) {
+    const continuous = opts.continuous === true;
+    const sentA = Number(opts.sentA || 0) || 0;
+    const session = await this.autoPickAccountByPhone(controlChatId, items, replyTo);
+    const { peer } = session;
+    const total = items.length;
+    const gapMs = 600;
+    if (sentA) session.stats.sentA = sentA;
+
+    for (let i = 0; i < items.length; i++) {
+      const s = this.getSession(controlChatId);
+      if (!s || s.cancel) {
+        await this.notify(controlChatId, `🛑 ${this.label} đã hủy.`, replyTo);
+        this.clearSession(controlChatId);
+        return;
+      }
+      const item = items[i];
+      const fields = parseBdsdFields(item.line);
+      const preview =
+        item.line.length > 100 ? item.line.slice(0, 97) + '…' : item.line;
+      const tag = item.kind === 'tru' ? 'Trừ' : 'Cộng';
+      await this.notify(
+        controlChatId,
+        `▶️ [${i + 1}/${total}] ${tag}\n\`${preview}\``,
+        replyTo
+      );
+
+      try {
+        const found = await this.findAndOpenListItem(s, fields, controlChatId);
+        if (!found) {
+          s.stats.errors += 1;
+          await sleep(gapMs);
+          continue;
+        }
+        let { detail, body, page } = found;
+        s.currentPage = page;
+
+        if (item.kind === 'tru') {
+          const info = bodyAmountInfo(body);
+          if (info && info.sign === '-') {
+            s.stats.skippedFlip += 1;
+            await this.notify(
+              controlChatId,
+              `⏭️ [${i + 1}] Đã là Trừ — bỏ qua đổi loại`,
+              replyTo
+            );
+          } else {
+            const confirmMsg = await this.editTypeToTru(detail, peer);
+            s.stats.flipped += 1;
+            await this.notify(
+              controlChatId,
+              `✅ [${i + 1}] Đã đổi → Trừ\n↩️ Quay lại → Sửa Thời Gian…`,
+              replyTo
+            );
+            const reopened = await this.afterFlipBackThenReopenForTime(
+              confirmMsg,
+              peer,
+              fields,
+              page,
+              s
+            );
+            detail = reopened.detail;
+            body = reopened.body;
+            page = reopened.page || page;
+            s.currentPage = page;
+          }
+        }
+
+        if (!(await this.messageHasTimeButton(detail))) {
+          const d2 = await this.findDetailMessage(peer);
+          if (d2) {
+            detail = d2;
+            body = String(detail.message || detail.text || '');
+          }
+        }
+
+        const contentTime = this.resolveContentTime(body, fields);
+        const fieldTime = this.extractFieldTime(body);
+        const rawField = extractFieldTimeRaw(body);
+        if (!contentTime) {
+          await this.notify(
+            controlChatId,
+            `⚠️ [${i + 1}] Không parse được giờ Nội dung — bỏ qua`,
+            replyTo
+          );
+        } else if (shouldSkipTimeEdit(contentTime, fieldTime, rawField, this.keepSeconds)) {
+          s.stats.skippedTime += 1;
+          s.stats.skipped += 1;
+          await this.notify(
+            controlChatId,
+            `⏭️ [${i + 1}] Giờ đã đúng (${contentTime})`,
+            replyTo
+          );
+        } else {
+          const fresh = await this.findDetailMessage(peer);
+          if (fresh) detail = fresh;
+          const beforeEditId = detail?.id || 0;
+          const oldTime =
+            this.extractFieldTime(String(detail?.message || detail?.text || '')) || null;
+          detail = await this.editTimeOnDetail(detail, peer, contentTime);
+          let rawAfter = extractFieldTimeRaw(String(detail?.message || detail?.text || ''));
+          let fieldAfter = this.extractFieldTime(String(detail?.message || detail?.text || ''));
+          if (
+            !fieldMatchesTarget(rawAfter, fieldAfter, contentTime, this.keepSeconds)
+          ) {
+            detail =
+              (await this.waitForUpdatedDetailTime(peer, contentTime, {
+                beforeId: beforeEditId,
+                oldTime,
+              })) || detail;
+            body = String(detail?.message || detail?.text || '');
+            rawAfter = extractFieldTimeRaw(body);
+            fieldAfter = this.extractFieldTime(body);
+          }
+          if (
+            !fieldMatchesTarget(rawAfter, fieldAfter, contentTime, this.keepSeconds)
+          ) {
+            throw new Error(
+              `Sau sửa vẫn lệch: \`${rawAfter || fieldAfter || '(trống)'}\` (cần \`${contentTime}\`)`
+            );
+          }
+          s.stats.fixedTime += 1;
+          s.stats.fixed += 1;
+          await this.notify(
+            controlChatId,
+            `✅ [${i + 1}] Giờ → ${contentTime}`,
+            replyTo
+          );
+        }
+
+        let listMsg = await this.returnToTransactionList(detail, peer, {
+          afterEdit: true,
+        });
+        const nav = await this.goToTxPageSafe(listMsg, peer, page || 1);
+        s.listMsg = nav.msg;
+        s.lastMsg = nav.msg;
+      } catch (e) {
+        s.stats.errors += 1;
+        await this.notify(controlChatId, `❌ [${i + 1}] ${e.message}`, replyTo);
+        try {
+          const latest = await this.getLatestMessage(peer);
+          let listMsg = await this.returnToTransactionList(latest, peer, {
+            afterEdit: false,
+          });
+          const nav = await this.goToTxPageSafe(listMsg, peer, s.currentPage || 1);
+          s.listMsg = nav.msg;
+        } catch (_e) {
+          /* ignore */
+        }
+      }
+      if (i < items.length - 1) await sleep(gapMs);
+    }
+
+    const done = this.getSession(controlChatId);
+    const st = done?.stats || {};
+    const summary = [
+      `🏁 ${this.label} list xong (${total} mục).`,
+      continuous || sentA
+        ? `Gửi A (batch): ${st.sentA || sentA || 0}`
+        : null,
+      `Đổi Trừ: ${st.flipped || 0} (bỏ qua ${st.skippedFlip || 0})`,
+      `Sửa giờ: ${st.fixedTime || 0} (đã đúng ${st.skippedTime || 0})`,
+      `Lỗi: ${st.errors || 0}`,
+    ].filter(Boolean);
+
+    if (continuous && typeof this.returnToAwaitList === 'function') {
+      // Giữ lastItems + TK cho /phab / batch sau
+      if (done) {
+        done.lastItems = items.slice();
+        done.stats = { ...st };
+      }
+      await this.returnToAwaitList(controlChatId, summary);
+      return;
+    }
+
+    this.clearSession(controlChatId);
+    await this.notify(controlChatId, summary.join('\n'), replyTo);
   }
 }
 
@@ -1488,6 +2895,17 @@ module.exports = {
   WfRunner,
   Wf1Runner: WfRunner, // alias
   BTN,
+  BDSD_LINE,
+  KIND_LINE_RE,
+  extractAnnotatedItems,
+  extractWf4Items: extractAnnotatedItems,
+  looksLikeAnnotatedList,
+  looksLikeWf4List: looksLikeAnnotatedList,
+  parseBdsdFields,
+  contentNeedle,
+  listHasPhone,
+  listHasPhoneForPhaseB: listHasPhone,
+  isWf1AnnotatedRepairMessage,
   extractContentTime,
   extractFieldTime,
   extractFieldTimeRaw,
