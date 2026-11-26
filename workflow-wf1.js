@@ -9,7 +9,7 @@
  * 1) /start → bấm button đầu → button thứ 2
  * 2) User chọn filter: "tài khoản còn hạn" hoặc "tài khoản hết hạn"
  * 3) Liệt kê button tài khoản → user chọn
- * 4) "chỉnh sửa giao dịch" → "chỉnh giao dịch"
+ * 4) "chỉnh sửa giao dịch" / "chỉnh sửa GD" → "chỉnh giao dịch" / "chỉnh GD"
  * 5) Lặp từng giao dịch: so sánh thời gian trong Nội dung vs mục thời gian;
  *    trùng → bỏ qua; khác → chỉnh thời gian theo Nội dung; báo cáo về chat.
  */
@@ -24,9 +24,9 @@ const BTN = {
   /** Còn hạn hoặc hết hạn — bước filter trước khi liệt kê TK */
   accountFilter:
     /t[aà]i\s*kho[aả]n\s*(c[oò]n\s*h[aạ]n|h[eế]t\s*h[aạ]n)/i,
-  // Một số bot: "Chỉnh sửa giao dịch"; bot này: "✏️ Chỉnh Giao Dịch"
-  editTxMenu: /ch[iỉ]nh\s*s[uử]a\s*giao\s*d[iị]ch/i,
-  editTx: /ch[iỉ]nh\s*giao\s*d[iị]ch/i,
+  // "Chỉnh sửa giao dịch" | "Chỉnh sửa GD" → rồi "Chỉnh Giao Dịch" | "Chỉnh GD"
+  editTxMenu: /ch[iỉ]nh\s*s[uử]a\s*(?:giao\s*d[iị]ch|g\.?\s*d\.?|gd)\b/i,
+  editTx: /ch[iỉ]nh\s*(?:giao\s*d[iị]ch|g\.?\s*d\.?|gd)\b/i,
   editTime: /th[oờ]i\s*gian|ch[iỉ]nh.*gi[oờ]|s[uử]a.*th[oờ]i/i,
   // Chỉ nhận diện nút quay lại rõ ràng (tránh khớp nhầm field khác)
   back: /quay\s*l[aạ]i|^back$|«|‹|⬅️/i,
